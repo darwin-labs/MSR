@@ -1,4 +1,4 @@
-# Multi-Step Reasoning LLM Architecture
+# Multi-Step Reasoning (MSR) Framework
 
 A framework to enhance the reasoning capabilities of foundation models through structured multi-step thinking processes.
 
@@ -27,14 +27,46 @@ The architecture is built around **Qwen QWQ 32B**, leveraging its capabilities w
 ## Project Structure
 
 - `src/`: Core implementation of the multi-step reasoning architecture
-- `models/`: Model configuration and adaptation for Qwen QWQ 32B
+  - `models/`: Model configuration and adaptation for Qwen QWQ 32B
+  - `reasoning/`: Implementation of reasoning steps and pipeline
+  - `utils/`: Utility functions for prompts and other helpers
 - `examples/`: Sample applications and demonstrations
 - `eval/`: Evaluation frameworks and benchmarks
+- `tests/`: Unit tests for components
 
 ## Getting Started
 
-[Installation and usage instructions will be added as the project develops]
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/darwin-labs/MSR.git
+cd MSR
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install the package in development mode
+pip install -e .
+```
+
+### Running Examples
+
+```bash
+# Run the math problem solving example
+python examples/math_problem_solving.py --problem "If x + y = 10 and x - y = 4, what is the value of x?"
+
+# Run the evaluation benchmark
+python eval/benchmark.py --output results.json
+```
+
+## Testing
+
+```bash
+# Run tests
+python -m unittest discover tests
+```
 
 ## License
 
-[License information will be added] 
+This project is licensed under the MIT License - see the LICENSE file for details. 
