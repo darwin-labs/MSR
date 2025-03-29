@@ -24,7 +24,6 @@ class ResearchStep:
     goal: str  # The specific goal or purpose of this step
     expected_output: str
     dependencies: List[str] = field(default_factory=list)
-    estimated_time_minutes: int = 0
 
 
 @dataclass
@@ -59,8 +58,7 @@ class ResearchPlan:
                 description=step.get("description", ""),
                 goal=step.get("goal", "No goal specified"),  # Default value if not found
                 expected_output=step.get("expected_output", ""),
-                dependencies=step.get("dependencies", []),
-                estimated_time_minutes=step.get("estimated_time_minutes", 0)
+                dependencies=step.get("dependencies", [])
             )
             for step in data.get("steps", [])
         ]
@@ -129,7 +127,7 @@ class PlannerLLM:
         """
         domain_context = f"in the domain of {domain}" if domain else ""
         
-        system_prompt = f"""You are an expert research planner {domain_context}. 
+        system_prompt = f"""You are an expert research planner {domain_context}. YOU ARE IN JSON MODE.
 Your task is to create a structured research plan in JSON format based on the given prompt or question.
 
 The plan should follow this exact JSON structure:
@@ -144,8 +142,7 @@ The plan should follow this exact JSON structure:
       "description": "Detailed explanation of what this step involves",
       "goal": "Specific purpose or objective of this step (what it aims to achieve)",
       "expected_output": "Clear description of what should result from this step",
-      "dependencies": [],
-      "estimated_time_minutes": 30
+      "dependencies": []
     }},
     ...
   ]"""
@@ -170,9 +167,8 @@ Follow these guidelines:
 3. IMPORTANT: Each step MUST include a specific goal field that clearly states what that step aims to achieve.
 4. For dependencies, use the step IDs that the current step depends on.
 5. Ensure the steps are in a logical sequence but consider which steps could be performed in parallel.
-6. Provide realistic time estimates for each step.
-7. The output MUST be valid, parseable JSON.
-8. Do not include any explanations or text outside the JSON structure.
+6. The output MUST be valid, parseable JSON.
+7. Do not include any explanations or text outside the JSON structure.
 
 Research Prompt: {prompt}"""
 
@@ -267,7 +263,7 @@ Research Prompt: {prompt}"""
                         description=f"The LLM did not return valid JSON: {str(e)}",
                         goal="To obtain a valid JSON research plan",
                         expected_output="Valid JSON response",
-                        estimated_time_minutes=0
+                        dependencies=[]
                     )
                     
                     return ResearchPlan(
@@ -285,7 +281,7 @@ Research Prompt: {prompt}"""
                 description="The LLM did not return a valid response.",
                 goal="To obtain a valid research plan response",
                 expected_output="Valid research plan",
-                estimated_time_minutes=0
+                dependencies=[]
             )
             
             return ResearchPlan(
@@ -304,7 +300,7 @@ Research Prompt: {prompt}"""
                 description=f"An error occurred: {str(e)}",
                 goal="To resolve the error and generate a valid research plan",
                 expected_output="Valid research plan",
-                estimated_time_minutes=0
+                dependencies=[]
             )
             
             return ResearchPlan(

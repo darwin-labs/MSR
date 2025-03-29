@@ -70,7 +70,6 @@ def generate_plan(
     print("\nResearch Steps:")
     for i, step in enumerate(plan.steps, 1):
         print(f"\n{i}. {step.title} (ID: {step.id})")
-        print(f"   Time estimate: {step.estimated_time_minutes} minutes")
         if step.dependencies:
             print(f"   Dependencies: {', '.join(step.dependencies)}")
         print(f"   Goal: {step.goal}")
