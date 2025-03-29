@@ -21,6 +21,7 @@ class ResearchStep:
     id: str
     title: str
     description: str
+    goal: str  # The specific goal or purpose of this step
     expected_output: str
     dependencies: List[str] = field(default_factory=list)
     estimated_time_minutes: int = 0
@@ -56,6 +57,7 @@ class ResearchPlan:
                 id=step.get("id", ""),
                 title=step.get("title", ""),
                 description=step.get("description", ""),
+                goal=step.get("goal", "No goal specified"),  # Default value if not found
                 expected_output=step.get("expected_output", ""),
                 dependencies=step.get("dependencies", []),
                 estimated_time_minutes=step.get("estimated_time_minutes", 0)
@@ -140,6 +142,7 @@ The plan should follow this exact JSON structure:
       "id": "step-1",
       "title": "Brief, descriptive title for the step",
       "description": "Detailed explanation of what this step involves",
+      "goal": "Specific purpose or objective of this step (what it aims to achieve)",
       "expected_output": "Clear description of what should result from this step",
       "dependencies": [],
       "estimated_time_minutes": 30
@@ -164,11 +167,12 @@ The plan should follow this exact JSON structure:
 Follow these guidelines:
 1. Generate exactly {num_steps} research steps, unless the problem clearly requires more or fewer.
 2. Make each step clear, actionable, and self-contained.
-3. For dependencies, use the step IDs that the current step depends on.
-4. Ensure the steps are in a logical sequence but consider which steps could be performed in parallel.
-5. Provide realistic time estimates for each step.
-6. The output MUST be valid, parseable JSON.
-7. Do not include any explanations or text outside the JSON structure.
+3. IMPORTANT: Each step MUST include a specific goal field that clearly states what that step aims to achieve.
+4. For dependencies, use the step IDs that the current step depends on.
+5. Ensure the steps are in a logical sequence but consider which steps could be performed in parallel.
+6. Provide realistic time estimates for each step.
+7. The output MUST be valid, parseable JSON.
+8. Do not include any explanations or text outside the JSON structure.
 
 Research Prompt: {prompt}"""
 
@@ -261,6 +265,7 @@ Research Prompt: {prompt}"""
                         id="error-1",
                         title="Error parsing LLM response",
                         description=f"The LLM did not return valid JSON: {str(e)}",
+                        goal="To obtain a valid JSON research plan",
                         expected_output="Valid JSON response",
                         estimated_time_minutes=0
                     )
@@ -278,6 +283,7 @@ Research Prompt: {prompt}"""
                 id="error-1",
                 title="Error: No valid response received",
                 description="The LLM did not return a valid response.",
+                goal="To obtain a valid research plan response",
                 expected_output="Valid research plan",
                 estimated_time_minutes=0
             )
@@ -296,6 +302,7 @@ Research Prompt: {prompt}"""
                 id="error-1",
                 title="Error generating research plan",
                 description=f"An error occurred: {str(e)}",
+                goal="To resolve the error and generate a valid research plan",
                 expected_output="Valid research plan",
                 estimated_time_minutes=0
             )

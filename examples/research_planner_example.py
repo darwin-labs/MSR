@@ -73,6 +73,7 @@ def generate_plan(
         print(f"   Time estimate: {step.estimated_time_minutes} minutes")
         if step.dependencies:
             print(f"   Dependencies: {', '.join(step.dependencies)}")
+        print(f"   Goal: {step.goal}")
         print(f"   Description: {step.description}")
         print(f"   Expected output: {step.expected_output}")
     
