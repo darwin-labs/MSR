@@ -4,6 +4,13 @@ Adapter for Qwen QWQ 32B model integration with MSR framework.
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Dict, List, Optional, Tuple, Union
+import os
+import sys
+
+# Add parent directory to path if needed
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.utils.config import config_manager
 
 class QwenMSRAdapter:
     """
@@ -17,6 +24,7 @@ class QwenMSRAdapter:
         self, 
         model_name: str = "Qwen/Qwen2-32B-Instruct", 
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        api_key: Optional[str] = None,
         **kwargs
     ):
         """
@@ -25,10 +33,22 @@ class QwenMSRAdapter:
         Args:
             model_name: The specific Qwen model to load
             device: The device to load the model on
+            api_key: API key for Qwen API (optional, will use config if not provided)
             **kwargs: Additional arguments passed to the model loading function
         """
         self.model_name = model_name
         self.device = device
+        
+        # Get API key from parameters, or config, or environment
+        self.api_key = api_key or config_manager.get_api_key("qwen")
+        
+        # Set API key in environment if available
+        if self.api_key:
+            os.environ["QWEN_API_KEY"] = self.api_key
+        elif "QWEN_API_KEY" not in os.environ:
+            print("Warning: No Qwen API key found. Model may not load correctly.")
+            print("Set QWEN_API_KEY in your .env file or use config_manager.set_api_key('qwen', 'your-key')")
+        
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, 

@@ -128,4 +128,14 @@ dmypy.json
 
 # OS specific files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# API Keys and secrets
+.env
+.env.*
+!.env.template
+secrets/
+*_key.txt
+*_keys.txt
+api_keys.yaml
+config.json 

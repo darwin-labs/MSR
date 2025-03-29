@@ -33,6 +33,7 @@ The architecture is built around **Qwen QWQ 32B**, leveraging its capabilities w
 - `examples/`: Sample applications and demonstrations
 - `eval/`: Evaluation frameworks and benchmarks
 - `tests/`: Unit tests for components
+- `scripts/`: Utility scripts for configuration and maintenance
 
 ## Getting Started
 
@@ -48,7 +49,50 @@ pip install -r requirements.txt
 
 # Install the package in development mode
 pip install -e .
+
+# Set up your API keys
+python scripts/config_cli.py setup
 ```
+
+### API Key Management
+
+The MSR framework requires API keys to interact with language models like Qwen. We've implemented a secure mechanism for managing these keys:
+
+1. Set up the initial configuration:
+
+```bash
+python scripts/config_cli.py setup
+```
+
+This will create a `.env` template file in the root directory. 
+
+2. Edit the `.env` file to add your API keys:
+
+```
+QWEN_API_KEY="your-actual-key-here"
+OPENAI_API_KEY="your-actual-key-here"
+```
+
+Alternatively, you can use the CLI tool to add keys securely:
+
+```bash
+python scripts/config_cli.py add-key qwen
+# You'll be prompted to enter the key securely
+```
+
+3. View your configured API keys:
+
+```bash
+python scripts/config_cli.py list
+```
+
+4. Test if your API keys are working:
+
+```bash
+python scripts/config_cli.py test qwen
+```
+
+> **Note**: API keys are stored securely in `~/.msr/config.json` and will not be committed to version control. The `.env` file and configuration files are excluded in `.gitignore`.
 
 ### Running Examples
 
