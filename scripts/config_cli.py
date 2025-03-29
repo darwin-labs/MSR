@@ -107,6 +107,49 @@ def test_api_key(args):
         except ImportError:
             print("Error: The openai library is not installed.")
             print("Install it with: pip install openai")
+    elif service == "openrouter":
+        try:
+            import aiohttp
+            import asyncio
+            
+            print("Attempting to connect to OpenRouter API...")
+            
+            async def test_openrouter():
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    # Test models endpoint
+                    try:
+                        async with session.get(
+                            "https://openrouter.ai/api/v1/models",
+                            headers=headers
+                        ) as response:
+                            if response.status == 200:
+                                data = await response.json()
+                                model_count = len(data.get("data", []))
+                                print("Success! Connection to OpenRouter API established.")
+                                print(f"Available models: {model_count} models")
+                            else:
+                                error = await response.text()
+                                print(f"Error: API returned status {response.status}")
+                                print(f"Error details: {error}")
+                    except Exception as e:
+                        print(f"Error connecting to OpenRouter API: {e}")
+            
+            # Run the async test
+            asyncio.run(test_openrouter())
+            
+            # Suggest using the example script
+            print("\nTo see all available models and test generation:")
+            print("python examples/openrouter_example.py --list-models")
+            print("python examples/openrouter_example.py --model MODEL_NAME --prompt \"Your prompt here\"")
+            
+        except ImportError:
+            print("Error: The aiohttp library is not installed.")
+            print("Install it with: pip install aiohttp")
     else:
         print(f"Testing for {service} is not implemented yet.")
 
@@ -120,7 +163,7 @@ def main():
     
     # Add API key command
     add_key_parser = subparsers.add_parser("add-key", help="Add an API key to the configuration")
-    add_key_parser.add_argument("service", help="Service name (e.g., qwen, openai)")
+    add_key_parser.add_argument("service", help="Service name (e.g., qwen, openai, openrouter)")
     add_key_parser.add_argument("--key", help="API key (if not provided, will prompt securely)")
     
     # List keys command
@@ -128,7 +171,7 @@ def main():
     
     # Test API key command
     test_parser = subparsers.add_parser("test", help="Test an API key")
-    test_parser.add_argument("service", help="Service to test (e.g., qwen, openai)")
+    test_parser.add_argument("service", help="Service to test (e.g., qwen, openai, openrouter)")
     
     # Parse arguments
     args = parser.parse_args()

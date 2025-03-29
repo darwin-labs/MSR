@@ -109,7 +109,7 @@ class ConfigManager:
         Get an API key for a specific service.
         
         Args:
-            service: The service name (e.g., 'qwen', 'openai')
+            service: The service name (e.g., 'qwen', 'openai', 'openrouter')
             
         Returns:
             The API key or None if not found
@@ -130,7 +130,7 @@ class ConfigManager:
         Set an API key for a specific service.
         
         Args:
-            service: The service name (e.g., 'qwen', 'openai')
+            service: The service name (e.g., 'qwen', 'openai', 'openrouter')
             api_key: The API key to store
             save: Whether to save to the config file
         """
@@ -162,9 +162,10 @@ def create_env_template() -> str:
 # API Keys for different models
 QWEN_API_KEY="your-qwen-api-key-here"
 OPENAI_API_KEY="your-openai-api-key-here"
+OPENROUTER_API_KEY="your-openrouter-api-key-here"
 
 # Model configuration
-DEFAULT_MODEL="qwen"  # Options: qwen, openai
+DEFAULT_MODEL="qwen/qwen2.5-32b-instruct"  # Options: qwen/qwen2.5-32b-instruct, anthropic/claude-3-opus-20240229, etc.
 """
     
     template_path = ".env.template"
