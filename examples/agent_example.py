@@ -6,209 +6,174 @@ import os
 import sys
 import argparse
 import json
-from typing import Set, Optional
+import asyncio
+from typing import Set, Optional, Dict, List, Any
 from pathlib import Path
 
 # Add the parent directory to the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.msr.agent import Agent, ToolType, create_agent
+from src.msr.planner_llm import PlannerLLM
+from src.msr.logger import configure_logger, LogLevel
 
 
-def run_agent(
+async def run_agent(
     task: str,
-    enable_code: bool = False,
-    enable_commands: bool = False,
-    enable_web_search: bool = False, 
+    model: Optional[str] = None,
+    temperature: float = 0.7,
+    steps: int = 3,
+    output_file: Optional[str] = None,
+    approve_execution: bool = True,
+    enable_python: bool = False,
+    enable_terminal: bool = False,
+    enable_web_search: bool = False,
     enable_file_operations: bool = False,
     enable_data_analysis: bool = False,
     enable_visualization: bool = False,
-    planner_model: Optional[str] = None,
-    executor_model: Optional[str] = None,
-    num_steps: int = 5,
-    domain: Optional[str] = None,
-    additional_context: Optional[str] = None,
-    output_file: Optional[str] = None,
-    requires_approval: bool = True
+    log_level: str = "INFO",
+    log_file: Optional[str] = None,
 ):
     """
-    Run the agent on a specific task with the specified tools.
+    Run an agent with the specified configuration.
     
     Args:
-        task: The task to perform
-        enable_code: Enable Python code execution
-        enable_commands: Enable terminal command execution
-        enable_web_search: Enable web search
-        enable_file_operations: Enable file read/write operations
-        enable_data_analysis: Enable data analysis tools
-        enable_visualization: Enable data visualization tools
-        planner_model: Model for plan generation
-        executor_model: Model for step execution
-        num_steps: Suggested number of steps in the plan
-        domain: Specific domain for the research
-        additional_context: Additional context for the task
-        output_file: File to save the results to
-        requires_approval: Whether tools require user approval
+        task: The task description for the agent
+        model: The model to use (defaults to config or Claude 3 Opus)
+        temperature: The temperature for generation (creativity)
+        steps: Maximum number of steps in the plan
+        output_file: Optional file path to save the agent state as JSON
+        approve_execution: Whether to require approval before each step
+        enable_python: Whether to enable Python code execution
+        enable_terminal: Whether to enable terminal commands
+        enable_web_search: Whether to enable web search
+        enable_file_operations: Whether to enable file operations
+        enable_data_analysis: Whether to enable data analysis
+        enable_visualization: Whether to enable data visualization
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file: Optional file path to save logs
     """
-    print(f"\n{'='*80}")
-    print(f"MSR AGENT EXECUTION: {task}")
-    print(f"{'='*80}")
+    # Configure logger
+    log_level_enum = LogLevel[log_level.upper()]
+    configure_logger(
+        level=log_level_enum,
+        log_file=log_file,
+        log_format="json" if log_file else "text"
+    )
     
-    # Configure allowed tools
+    print(f"🤖 Running agent with task: {task}")
+    print(f"📝 Using model: {model or 'default'}, Temperature: {temperature}")
+    
+    # Determine which tools to enable
     allowed_tools = set()
     
-    if enable_code:
-        allowed_tools.add(ToolType.PYTHON_CODE)
-    
-    if enable_commands:
+    if enable_python:
+        allowed_tools.add(ToolType.PYTHON_EXECUTION)
+        print("🐍 Enabled Python code execution")
+        
+    if enable_terminal:
         allowed_tools.add(ToolType.TERMINAL_COMMAND)
-    
+        print("💻 Enabled terminal command execution")
+        
     if enable_web_search:
         allowed_tools.add(ToolType.WEB_SEARCH)
-    
+        print("🔍 Enabled web search")
+        
     if enable_file_operations:
-        allowed_tools.add(ToolType.FILE_READ)
-        allowed_tools.add(ToolType.FILE_WRITE)
-    
+        allowed_tools.add(ToolType.FILE_OPERATIONS)
+        print("📂 Enabled file operations")
+        
     if enable_data_analysis:
         allowed_tools.add(ToolType.DATA_ANALYSIS)
-    
+        print("📊 Enabled data analysis")
+        
     if enable_visualization:
         allowed_tools.add(ToolType.VISUALIZATION)
-    
-    # Print enabled tools
-    print("\nEnabled Tools:")
-    for tool_type in allowed_tools:
-        print(f"- {tool_type.name}")
-    
-    # Create a temporary file for state saving
-    state_file = "agent_state.json"
+        print("📈 Enabled data visualization")
     
     # Create agent
     agent = create_agent(
         task=task,
-        allowed_tools=allowed_tools or None,
-        planner_model=planner_model,
-        executor_model=executor_model,
-        save_state_path=state_file
+        allowed_tools=allowed_tools,
+        model=model,
+        temperature=temperature,
+        require_step_approval=approve_execution
     )
     
-    # Set approval requirement
-    agent.requires_tool_approval = requires_approval
+    # Configure planner
+    planner_config = {
+        "model": model,
+        "temperature": temperature,
+        "max_steps": steps
+    }
     
     # Run the agent
-    print(f"\nGenerating and executing plan with {num_steps} suggested steps...")
+    print("\n🚀 Starting agent execution...\n")
+    await agent.run(planner_config=planner_config)
     
-    try:
-        result = agent.run(
-            num_steps=num_steps,
-            domain=domain,
-            additional_context=additional_context
-        )
-        
-        # Print results summary
-        print(f"\n{'='*80}")
-        print("EXECUTION RESULTS")
-        print(f"{'='*80}")
-        
-        print(f"\nPlan: {result['plan']['title']}")
-        print(f"Steps Completed: {result['summary']['successful_steps']}/{result['summary']['total_steps']}")
-        print(f"Success Rate: {result['success_rate']*100:.1f}%")
-        
-        print("\nKey Learnings:")
-        print(result['summary']['key_learnings'])
-        
-        # Save results if requested
-        if output_file:
-            os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-            with open(output_file, 'w') as f:
-                json.dump(result, f, indent=2)
-            print(f"\nResults saved to: {output_file}")
-        
-        return result
-        
-    finally:
-        # Clean up temporary state file
-        if os.path.exists(state_file):
-            os.remove(state_file)
+    # If output file is specified, save state to file
+    if output_file:
+        print(f"\n💾 Saving agent state to {output_file}")
+        agent.save_state(output_file)
+    
+    # Print completion message
+    print("\n✅ Agent execution complete!")
+    print(f"📊 Statistics: {len([s for s in agent.executed_steps if s.success])}/{len(agent.executed_steps)} steps successful")
+    
+    # Print where to find logs if log_file was specified
+    if log_file:
+        print(f"\n📋 Detailed logs saved to: {log_file}")
+        print("   You can view structured logs with: jq '.' " + log_file)
 
 
 def main():
-    """Main function to run the example."""
-    parser = argparse.ArgumentParser(description="MSR Agent Example")
+    """Parse command line arguments and run the agent."""
+    parser = argparse.ArgumentParser(description="Run an MSR Agent with various tools and configurations.")
     
-    parser.add_argument("--task", type=str, required=True,
-                       help="The task for the agent to perform")
-    
-    # Tool configuration
-    tool_group = parser.add_argument_group("Tool Configuration")
-    tool_group.add_argument("--enable-code", action="store_true",
-                          help="Enable Python code execution")
-    tool_group.add_argument("--enable-commands", action="store_true", 
-                          help="Enable terminal command execution")
-    tool_group.add_argument("--enable-web", action="store_true",
-                          help="Enable web search")
-    tool_group.add_argument("--enable-files", action="store_true",
-                          help="Enable file operations")
-    tool_group.add_argument("--enable-data", action="store_true",
-                          help="Enable data analysis tools")
-    tool_group.add_argument("--enable-viz", action="store_true",
-                          help="Enable data visualization tools")
-    tool_group.add_argument("--enable-all", action="store_true",
-                          help="Enable all tools")
-    
-    # Model configuration
-    model_group = parser.add_argument_group("Model Configuration")
-    model_group.add_argument("--planner-model", type=str,
-                           help="Model to use for planning")
-    model_group.add_argument("--executor-model", type=str,
-                           help="Model to use for step execution")
+    # Basic configuration
+    parser.add_argument("task", help="The task description for the agent", type=str)
+    parser.add_argument("--model", help="Model to use (default from config or Claude 3 Opus)", type=str)
+    parser.add_argument("--temperature", help="Temperature for generation (creativity)", type=float, default=0.7)
     
     # Plan configuration
-    plan_group = parser.add_argument_group("Plan Configuration")
-    plan_group.add_argument("--steps", type=int, default=5,
-                          help="Suggested number of steps (default: 5)")
-    plan_group.add_argument("--domain", type=str,
-                          help="Specific domain for the research")
-    plan_group.add_argument("--context", type=str,
-                          help="Additional context for the task")
+    parser.add_argument("--steps", help="Maximum number of steps in the plan", type=int, default=3)
     
-    # Output configuration
-    parser.add_argument("--output", type=str,
-                       help="File to save results to")
+    # Tool enablement
+    parser.add_argument("--enable-python", help="Enable Python code execution", action="store_true")
+    parser.add_argument("--enable-terminal", help="Enable terminal commands", action="store_true")
+    parser.add_argument("--enable-web-search", help="Enable web search", action="store_true")
+    parser.add_argument("--enable-file-operations", help="Enable file operations", action="store_true")
+    parser.add_argument("--enable-data-analysis", help="Enable data analysis", action="store_true")
+    parser.add_argument("--enable-visualization", help="Enable data visualization", action="store_true")
     
-    # Execution configuration
-    parser.add_argument("--no-approval", action="store_true",
-                       help="Don't require approval for tool execution")
+    # Output and execution options
+    parser.add_argument("--output-file", help="File path to save the agent state as JSON", type=str)
+    parser.add_argument("--no-approval", help="Don't require approval before executing steps", action="store_true")
+    
+    # Logging options
+    parser.add_argument("--log-level", help="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)", type=str, default="INFO", 
+                      choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+    parser.add_argument("--log-file", help="File path to save logs", type=str)
     
     args = parser.parse_args()
     
-    # Process enable-all flag
-    if args.enable_all:
-        args.enable_code = True
-        args.enable_commands = True
-        args.enable_web = True
-        args.enable_files = True
-        args.enable_data = True
-        args.enable_viz = True
-    
-    # Run the agent
-    run_agent(
+    # Run the agent with the specified configuration
+    asyncio.run(run_agent(
         task=args.task,
-        enable_code=args.enable_code,
-        enable_commands=args.enable_commands,
-        enable_web_search=args.enable_web,
-        enable_file_operations=args.enable_files,
-        enable_data_analysis=args.enable_data,
-        enable_visualization=args.enable_viz,
-        planner_model=args.planner_model,
-        executor_model=args.executor_model,
-        num_steps=args.steps,
-        domain=args.domain,
-        additional_context=args.context,
-        output_file=args.output,
-        requires_approval=not args.no_approval
-    )
+        model=args.model,
+        temperature=args.temperature,
+        steps=args.steps,
+        output_file=args.output_file,
+        approve_execution=not args.no_approval,
+        enable_python=args.enable_python,
+        enable_terminal=args.enable_terminal,
+        enable_web_search=args.enable_web_search,
+        enable_file_operations=args.enable_file_operations,
+        enable_data_analysis=args.enable_data_analysis,
+        enable_visualization=args.enable_visualization,
+        log_level=args.log_level,
+        log_file=args.log_file,
+    ))
 
 
 if __name__ == "__main__":

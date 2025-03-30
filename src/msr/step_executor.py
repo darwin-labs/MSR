@@ -15,6 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.llm_service.openrouter_service import OpenRouterService, create_openrouter_service
 from src.utils.config import config_manager
 from src.msr.planner_llm import ResearchPlan, ResearchStep
+from src.msr.logger import get_logger, LogEventType
 
 
 @dataclass
@@ -100,6 +101,9 @@ class StepExecutor:
         # Security flags
         self.allow_code_execution = allow_code_execution
         self.allow_command_execution = allow_command_execution
+        
+        # Get logger
+        self.logger = get_logger()
     
     def execute_python_code(self, code: str) -> CodeExecutionResult:
         """
@@ -112,11 +116,24 @@ class StepExecutor:
             CodeExecutionResult containing execution results
         """
         if not self.allow_code_execution:
+            error_msg = "Code execution is disabled. Enable with allow_code_execution=True."
+            self.logger.warning(
+                message=error_msg,
+                event_type=LogEventType.CODE_EXECUTION
+            )
             return CodeExecutionResult(
                 success=False,
                 output="",
-                error="Code execution is disabled. Enable with allow_code_execution=True."
+                error=error_msg
             )
+        
+        self.logger.info(
+            message="Executing Python code",
+            event_type=LogEventType.CODE_EXECUTION,
+            context={
+                "code_snippet": code[:100] + "..." if len(code) > 100 else code
+            }
+        )
         
         # Create a temporary file to execute the code
         with tempfile.NamedTemporaryFile(suffix='.py', delete=False) as temp:
@@ -135,12 +152,27 @@ class StepExecutor:
                 )
                 
                 if result.returncode == 0:
+                    self.logger.info(
+                        message="Python code execution succeeded",
+                        event_type=LogEventType.CODE_EXECUTION,
+                        context={
+                            "output_snippet": result.stdout[:100] + "..." if len(result.stdout) > 100 else result.stdout
+                        }
+                    )
                     return CodeExecutionResult(
                         success=True,
                         output=result.stdout,
                         error=None
                     )
                 else:
+                    self.logger.error(
+                        message="Python code execution failed",
+                        event_type=LogEventType.CODE_EXECUTION,
+                        context={
+                            "error": result.stderr,
+                            "stdout": result.stdout
+                        }
+                    )
                     return CodeExecutionResult(
                         success=False,
                         output=result.stdout,
@@ -148,16 +180,26 @@ class StepExecutor:
                     )
                     
             except subprocess.TimeoutExpired:
+                error_msg = "Code execution timed out after 30 seconds"
+                self.logger.error(
+                    message=error_msg,
+                    event_type=LogEventType.CODE_EXECUTION
+                )
                 return CodeExecutionResult(
                     success=False,
                     output="",
-                    error="Code execution timed out after 30 seconds"
+                    error=error_msg
                 )
             except Exception as e:
+                error_msg = f"Error executing code: {str(e)}"
+                self.logger.error(
+                    message=error_msg,
+                    event_type=LogEventType.CODE_EXECUTION
+                )
                 return CodeExecutionResult(
                     success=False,
                     output="",
-                    error=f"Error executing code: {str(e)}"
+                    error=error_msg
                 )
             finally:
                 # Clean up the temporary file
@@ -175,10 +217,15 @@ class StepExecutor:
             CommandExecutionResult containing execution results
         """
         if not self.allow_command_execution:
+            error_msg = "Command execution is disabled. Enable with allow_command_execution=True."
+            self.logger.warning(
+                message=error_msg,
+                event_type=LogEventType.COMMAND_EXECUTION
+            )
             return CommandExecutionResult(
                 success=False,
                 stdout="",
-                stderr="Command execution is disabled. Enable with allow_command_execution=True.",
+                stderr=error_msg,
                 exit_code=1
             )
         
@@ -187,12 +234,26 @@ class StepExecutor:
         
         # Check if the command contains any dangerous patterns
         if any(dc in command for dc in dangerous_commands):
+            error_msg = "Command execution blocked for security reasons."
+            self.logger.warning(
+                message=error_msg,
+                event_type=LogEventType.COMMAND_EXECUTION,
+                context={
+                    "command": command,
+                    "reason": "Security block - dangerous command pattern"
+                }
+            )
             return CommandExecutionResult(
                 success=False,
                 stdout="",
-                stderr="Command execution blocked for security reasons.",
+                stderr=error_msg,
                 exit_code=1
             )
+        
+        self.logger.info(
+            message=f"Executing command: {command}",
+            event_type=LogEventType.COMMAND_EXECUTION
+        )
         
         try:
             # Execute the command
@@ -204,6 +265,25 @@ class StepExecutor:
                 timeout=30  # Timeout after 30 seconds
             )
             
+            if result.returncode == 0:
+                self.logger.info(
+                    message="Command execution succeeded",
+                    event_type=LogEventType.COMMAND_EXECUTION,
+                    context={
+                        "command": command,
+                        "stdout_snippet": result.stdout[:100] + "..." if len(result.stdout) > 100 else result.stdout
+                    }
+                )
+            else:
+                self.logger.warning(
+                    message=f"Command execution failed with exit code {result.returncode}",
+                    event_type=LogEventType.COMMAND_EXECUTION,
+                    context={
+                        "command": command,
+                        "stderr": result.stderr
+                    }
+                )
+            
             return CommandExecutionResult(
                 success=result.returncode == 0,
                 stdout=result.stdout,
@@ -212,17 +292,29 @@ class StepExecutor:
             )
             
         except subprocess.TimeoutExpired:
+            error_msg = "Command execution timed out after 30 seconds"
+            self.logger.error(
+                message=error_msg,
+                event_type=LogEventType.COMMAND_EXECUTION,
+                context={"command": command}
+            )
             return CommandExecutionResult(
                 success=False,
                 stdout="",
-                stderr="Command execution timed out after 30 seconds",
+                stderr=error_msg,
                 exit_code=1
             )
         except Exception as e:
+            error_msg = f"Error executing command: {str(e)}"
+            self.logger.error(
+                message=error_msg,
+                event_type=LogEventType.COMMAND_EXECUTION,
+                context={"command": command}
+            )
             return CommandExecutionResult(
                 success=False,
                 stdout="",
-                stderr=f"Error executing command: {str(e)}",
+                stderr=error_msg,
                 exit_code=1
             )
     
@@ -345,6 +437,9 @@ If you use code or command execution, include the code or commands in the approp
         research_plan: ResearchPlan,
         previous_results: Optional[List[StepResult]] = None,
         additional_context: Optional[str] = None,
+        step_id_for_logs: Optional[str] = None,
+        task_id_for_logs: Optional[str] = None,
+        agent_id_for_logs: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         **kwargs
@@ -357,6 +452,9 @@ If you use code or command execution, include the code or commands in the approp
             research_plan: The overall research plan
             previous_results: Results from previous steps (optional)
             additional_context: Any additional context (optional)
+            step_id_for_logs: Step ID for logging (optional)
+            task_id_for_logs: Task ID for logging (optional)
+            agent_id_for_logs: Agent ID for logging (optional)
             temperature: Temperature for generation (overrides default)
             max_tokens: Max tokens for generation (overrides default)
             **kwargs: Additional parameters for generation
@@ -364,6 +462,23 @@ If you use code or command execution, include the code or commands in the approp
         Returns:
             A StepResult object containing the execution results
         """
+        # Set IDs for logging
+        agent_id = agent_id_for_logs
+        task_id = task_id_for_logs
+        step_id = step_id_for_logs or step.id
+        
+        self.logger.info(
+            message=f"Executing step: {step.title}",
+            event_type=LogEventType.STEP_EXECUTION_STARTED,
+            agent_id=agent_id,
+            task_id=task_id,
+            context={
+                "step_id": step_id,
+                "step_goal": step.goal,
+                "dependencies": step.dependencies
+            }
+        )
+        
         # Create the execution prompt
         execution_prompt = self._create_step_execution_prompt(
             step=step,
@@ -393,6 +508,18 @@ If you use code or command execution, include the code or commands in the approp
             {"role": "user", "content": f"Execute research step {step.id}: {step.title}"}
         ]
         
+        self.logger.debug(
+            message="Sending step execution request to LLM",
+            event_type=LogEventType.STEP_EXECUTION_STARTED,
+            agent_id=agent_id,
+            task_id=task_id,
+            context={
+                "step_id": step_id,
+                "model": self.service.model,
+                "temperature": params["temperature"]
+            }
+        )
+        
         try:
             # Make API call
             response = await self.service.generate_chat_response(
@@ -417,14 +544,35 @@ If you use code or command execution, include the code or commands in the approp
                     # Parse the JSON
                     result_data = json.loads(json_content)
                     
+                    self.logger.info(
+                        message="Successfully parsed LLM response as JSON",
+                        event_type=LogEventType.STEP_EXECUTION_COMPLETED,
+                        agent_id=agent_id,
+                        task_id=task_id,
+                        context={
+                            "step_id": step_id
+                        }
+                    )
+                    
                     # Execute any code blocks
                     code_execution_results = []
                     if self.allow_code_execution and "code_blocks" in result_data:
-                        for code_block in result_data.get("code_blocks", []):
+                        for i, code_block in enumerate(result_data.get("code_blocks", [])):
                             code = code_block.get("code", "")
                             description = code_block.get("description", "")
                             
                             if code:
+                                self.logger.info(
+                                    message=f"Executing code block {i+1}: {description}",
+                                    event_type=LogEventType.CODE_EXECUTION,
+                                    agent_id=agent_id,
+                                    task_id=task_id,
+                                    context={
+                                        "step_id": step_id,
+                                        "code_snippet": code[:100] + "..." if len(code) > 100 else code
+                                    }
+                                )
+                                
                                 # Execute the code
                                 execution_result = self.execute_python_code(code)
                                 
@@ -440,11 +588,22 @@ If you use code or command execution, include the code or commands in the approp
                     # Execute any command blocks
                     command_execution_results = []
                     if self.allow_command_execution and "command_blocks" in result_data:
-                        for command_block in result_data.get("command_blocks", []):
+                        for i, command_block in enumerate(result_data.get("command_blocks", [])):
                             command = command_block.get("command", "")
                             description = command_block.get("description", "")
                             
                             if command:
+                                self.logger.info(
+                                    message=f"Executing command block {i+1}: {description}",
+                                    event_type=LogEventType.COMMAND_EXECUTION,
+                                    agent_id=agent_id,
+                                    task_id=task_id,
+                                    context={
+                                        "step_id": step_id,
+                                        "command": command
+                                    }
+                                )
+                                
                                 # Execute the command
                                 execution_result = self.execute_command(command)
                                 
@@ -470,6 +629,22 @@ If you use code or command execution, include the code or commands in the approp
                         command_executions=command_execution_results
                     )
                     
+                    # Log success
+                    self.logger.info(
+                        message=f"Step execution completed successfully: {step.title}",
+                        event_type=LogEventType.STEP_EXECUTION_COMPLETED,
+                        agent_id=agent_id,
+                        task_id=task_id,
+                        context={
+                            "step_id": step_id,
+                            "learning": step_result.learning,
+                            "findings_snippet": step_result.findings[:100] + "..." if len(step_result.findings) > 100 else step_result.findings,
+                            "next_steps_count": len(step_result.next_steps),
+                            "code_executions_count": len(code_execution_results),
+                            "command_executions_count": len(command_execution_results)
+                        }
+                    )
+                    
                     # Add to execution history
                     self.execution_history.append(step_result)
                     
@@ -477,12 +652,24 @@ If you use code or command execution, include the code or commands in the approp
                 
                 except json.JSONDecodeError as e:
                     # If parsing fails, create an error result
+                    error_msg = f"JSON decode error: {str(e)}"
+                    self.logger.error(
+                        message=f"Failed to parse LLM response as JSON: {error_msg}",
+                        event_type=LogEventType.ERROR,
+                        agent_id=agent_id,
+                        task_id=task_id,
+                        context={
+                            "step_id": step_id,
+                            "raw_response_snippet": content[:200] + "..." if len(content) > 200 else content
+                        }
+                    )
+                    
                     error_result = StepResult(
                         step_id=step.id,
                         success=False,
                         findings="Failed to parse LLM response as JSON",
                         learning="Ensure proper JSON formatting in LLM responses",
-                        error=f"JSON decode error: {str(e)}",
+                        error=error_msg,
                         artifacts={"raw_response": content}
                     )
                     
@@ -492,6 +679,18 @@ If you use code or command execution, include the code or commands in the approp
                     return error_result
             
             # Handle case where no valid response was received
+            error_msg = "No valid response from LLM"
+            self.logger.error(
+                message=error_msg,
+                event_type=LogEventType.ERROR,
+                agent_id=agent_id,
+                task_id=task_id,
+                context={
+                    "step_id": step_id,
+                    "response_status": str(response)
+                }
+            )
+            
             error_result = StepResult(
                 step_id=step.id,
                 success=False,
@@ -508,6 +707,18 @@ If you use code or command execution, include the code or commands in the approp
             
         except Exception as e:
             # Handle any exceptions
+            error_msg = f"Error during step execution: {str(e)}"
+            self.logger.error(
+                message=error_msg,
+                event_type=LogEventType.ERROR,
+                agent_id=agent_id,
+                task_id=task_id,
+                context={
+                    "step_id": step_id,
+                    "exception_type": type(e).__name__
+                }
+            )
+            
             error_result = StepResult(
                 step_id=step.id,
                 success=False,
@@ -565,10 +776,12 @@ If you use code or command execution, include the code or commands in the approp
         finally:
             loop.close()
     
-    def execute_plan(
+    async def execute_plan_async(
         self,
         research_plan: ResearchPlan,
         additional_context: Optional[str] = None,
+        agent_id_for_logs: Optional[str] = None,
+        task_id_for_logs: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         **kwargs
@@ -579,6 +792,8 @@ If you use code or command execution, include the code or commands in the approp
         Args:
             research_plan: The research plan to execute
             additional_context: Any additional context (optional)
+            agent_id_for_logs: Agent ID for logging (optional)
+            task_id_for_logs: Task ID for logging (optional)
             temperature: Temperature for generation (overrides default)
             max_tokens: Max tokens for generation (overrides default)
             **kwargs: Additional parameters for generation
@@ -586,6 +801,21 @@ If you use code or command execution, include the code or commands in the approp
         Returns:
             List of StepResult objects for all executed steps
         """
+        # Set IDs for logging
+        agent_id = agent_id_for_logs
+        task_id = task_id_for_logs
+        
+        self.logger.info(
+            message=f"Executing research plan: {research_plan.title}",
+            event_type=LogEventType.PLAN_GENERATION_COMPLETED,
+            agent_id=agent_id,
+            task_id=task_id,
+            context={
+                "steps_count": len(research_plan.steps),
+                "objective": research_plan.objective
+            }
+        )
+        
         # Reset execution history
         self.execution_history = []
         
@@ -596,6 +826,18 @@ If you use code or command execution, include the code or commands in the approp
         for step in research_plan.steps:
             # Check if all dependencies are completed
             if not all(dep_id in completed_steps for dep_id in step.dependencies):
+                self.logger.warning(
+                    message=f"Skipping step {step.id} due to missing dependencies",
+                    event_type=LogEventType.STEP_EXECUTION_STARTED,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    context={
+                        "step_id": step.id,
+                        "dependencies": step.dependencies,
+                        "completed_steps": list(completed_steps.keys())
+                    }
+                )
+                
                 # Store as failed result if dependencies are not met
                 error_result = StepResult(
                     step_id=step.id,
@@ -612,11 +854,13 @@ If you use code or command execution, include the code or commands in the approp
             dependency_results = [completed_steps[dep_id] for dep_id in step.dependencies]
             
             # Execute the step
-            result = self.execute_step(
+            result = await self.execute_step_async(
                 step=step,
                 research_plan=research_plan,
                 previous_results=dependency_results if dependency_results else None,
                 additional_context=additional_context,
+                agent_id_for_logs=agent_id,
+                task_id_for_logs=task_id,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 **kwargs
@@ -624,6 +868,13 @@ If you use code or command execution, include the code or commands in the approp
             
             # Store the result
             completed_steps[step.id] = result
+        
+        self.logger.info(
+            message=f"Research plan execution completed with {len([r for r in self.execution_history if r.success])}/{len(self.execution_history)} successful steps",
+            event_type=LogEventType.PLAN_GENERATION_COMPLETED,
+            agent_id=agent_id,
+            task_id=task_id
+        )
         
         return self.execution_history
 
