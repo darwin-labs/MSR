@@ -162,7 +162,11 @@ The plan should follow this exact JSON structure:
         system_prompt += f"""
 
 Follow these guidelines:
-1. Generate exactly {num_steps} research steps, unless the problem clearly requires more or fewer.
+1. IMPORTANT: Analyze the complexity of the research task and adjust the number of steps accordingly:
+   - For simple tasks, use fewer steps (3-5 steps)
+   - For moderately complex tasks, use a medium number of steps (5-8 steps)
+   - For highly complex tasks, use more steps (8-12 steps or more)
+   I've suggested {num_steps} steps, but you should adjust based on your assessment of the complexity.
 2. Make each step clear, actionable, and self-contained.
 3. IMPORTANT: Each step MUST include a specific goal field that clearly states what that step aims to achieve.
 4. For dependencies, use the step IDs that the current step depends on.
@@ -189,7 +193,9 @@ Research Prompt: {prompt}"""
         
         Args:
             prompt: The main prompt or research question
-            num_steps: Number of steps to include in the plan (default: 5)
+            num_steps: Suggested number of steps in the plan (default: 5). The LLM will adjust
+                       based on task complexity - simpler tasks may have fewer steps, while 
+                       more complex tasks will have more steps.
             include_metadata: Whether to include metadata (default: True)
             domain: Specific domain for the research (optional)
             temperature: Temperature for generation (overrides default)
@@ -326,7 +332,9 @@ Research Prompt: {prompt}"""
         
         Args:
             prompt: The main prompt or research question
-            num_steps: Number of steps to include in the plan (default: 5)
+            num_steps: Suggested number of steps in the plan (default: 5). The LLM will adjust
+                       based on task complexity - simpler tasks may have fewer steps, while 
+                       more complex tasks will have more steps.
             include_metadata: Whether to include metadata (default: True)
             domain: Specific domain for the research (optional)
             temperature: Temperature for generation (overrides default)

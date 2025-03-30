@@ -29,7 +29,8 @@ def generate_plan(
     Args:
         prompt: Research prompt or question
         model: Model to use (default: Claude 3 Opus)
-        num_steps: Number of steps in the plan (default: 5)
+        num_steps: Suggested number of steps (default: 5). The actual number will
+                   vary based on the LLM's assessment of task complexity.
         domain: Research domain (optional)
         temperature: Temperature for generation (default: 0.2)
         output_file: File to save the plan to (optional)
@@ -45,7 +46,7 @@ def generate_plan(
     print(prompt)
     print("-" * 80)
     print(f"Model: {model or 'Default (Claude 3 Opus)'}")
-    print(f"Number of steps: {num_steps}")
+    print(f"Suggested number of steps: {num_steps} (will vary based on task complexity)")
     if domain:
         print(f"Domain: {domain}")
     print()
@@ -68,6 +69,7 @@ def generate_plan(
     
     # Print the steps
     print("\nResearch Steps:")
+    print(f"Total steps: {len(plan.steps)}")
     for i, step in enumerate(plan.steps, 1):
         print(f"\n{i}. {step.title} (ID: {step.id})")
         if step.dependencies:
@@ -105,7 +107,7 @@ def main():
     parser.add_argument("--model", type=str, 
                         help="Model to use (default: anthropic/claude-3-opus)")
     parser.add_argument("--steps", type=int, default=5,
-                        help="Number of steps in the research plan")
+                        help="Suggested number of steps (LLM will adjust based on task complexity)")
     parser.add_argument("--domain", type=str,
                         help="Research domain (e.g., 'climate science', 'AI')")
     parser.add_argument("--temperature", type=float, default=0.2,
