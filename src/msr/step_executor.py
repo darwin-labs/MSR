@@ -4,7 +4,9 @@ StepExecutor module for executing individual research steps from a research plan
 import os
 import sys
 import json
-from typing import Dict, List, Optional, Any, Union
+import subprocess
+import tempfile
+from typing import Dict, List, Optional, Any, Union, Tuple
 from dataclasses import dataclass, field, asdict
 
 # Add parent directory to path if needed
@@ -16,6 +18,23 @@ from src.msr.planner_llm import ResearchPlan, ResearchStep
 
 
 @dataclass
+class CodeExecutionResult:
+    """Result of executing code."""
+    success: bool
+    output: str
+    error: Optional[str] = None
+
+
+@dataclass
+class CommandExecutionResult:
+    """Result of executing a terminal command."""
+    success: bool
+    stdout: str
+    stderr: str
+    exit_code: int
+
+
+@dataclass
 class StepResult:
     """Result of executing a research step."""
     step_id: str
@@ -24,6 +43,8 @@ class StepResult:
     learning: str
     next_steps: List[str] = field(default_factory=list)
     artifacts: Dict[str, Any] = field(default_factory=dict)
+    code_executions: List[Dict[str, Any]] = field(default_factory=list)
+    command_executions: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
@@ -46,6 +67,8 @@ class StepExecutor:
         model: Optional[str] = None,
         temperature: float = 0.7,  # Higher temperature for more creative execution
         max_tokens: int = 2048,
+        allow_code_execution: bool = False,
+        allow_command_execution: bool = False,
         **kwargs
     ):
         """
@@ -56,6 +79,8 @@ class StepExecutor:
             model: Model to use (default: from config or anthropic/claude-3-opus)
             temperature: Default temperature for generation (default: 0.7)
             max_tokens: Default max tokens for generation (default: 2048)
+            allow_code_execution: Whether to allow Python code execution (default: False)
+            allow_command_execution: Whether to allow terminal command execution (default: False)
             **kwargs: Additional parameters for generation
         """
         # Use Claude as default model for better reasoning
@@ -71,6 +96,135 @@ class StepExecutor:
         
         # Store execution history
         self.execution_history: List[StepResult] = []
+        
+        # Security flags
+        self.allow_code_execution = allow_code_execution
+        self.allow_command_execution = allow_command_execution
+    
+    def execute_python_code(self, code: str) -> CodeExecutionResult:
+        """
+        Execute Python code in a sandbox environment.
+        
+        Args:
+            code: Python code to execute
+            
+        Returns:
+            CodeExecutionResult containing execution results
+        """
+        if not self.allow_code_execution:
+            return CodeExecutionResult(
+                success=False,
+                output="",
+                error="Code execution is disabled. Enable with allow_code_execution=True."
+            )
+        
+        # Create a temporary file to execute the code
+        with tempfile.NamedTemporaryFile(suffix='.py', delete=False) as temp:
+            temp_path = temp.name
+            try:
+                # Write the code to the temporary file
+                with open(temp_path, 'w') as f:
+                    f.write(code)
+                
+                # Execute the code in a separate process and capture output
+                result = subprocess.run(
+                    [sys.executable, temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30  # Timeout after 30 seconds
+                )
+                
+                if result.returncode == 0:
+                    return CodeExecutionResult(
+                        success=True,
+                        output=result.stdout,
+                        error=None
+                    )
+                else:
+                    return CodeExecutionResult(
+                        success=False,
+                        output=result.stdout,
+                        error=result.stderr
+                    )
+                    
+            except subprocess.TimeoutExpired:
+                return CodeExecutionResult(
+                    success=False,
+                    output="",
+                    error="Code execution timed out after 30 seconds"
+                )
+            except Exception as e:
+                return CodeExecutionResult(
+                    success=False,
+                    output="",
+                    error=f"Error executing code: {str(e)}"
+                )
+            finally:
+                # Clean up the temporary file
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+    
+    def execute_command(self, command: str) -> CommandExecutionResult:
+        """
+        Execute a terminal command.
+        
+        Args:
+            command: Terminal command to execute
+            
+        Returns:
+            CommandExecutionResult containing execution results
+        """
+        if not self.allow_command_execution:
+            return CommandExecutionResult(
+                success=False,
+                stdout="",
+                stderr="Command execution is disabled. Enable with allow_command_execution=True.",
+                exit_code=1
+            )
+        
+        # List of dangerous commands to block
+        dangerous_commands = ['rm -rf', 'mkfs', 'dd', ':(){', 'chmod -R 777', '> /dev/sda']
+        
+        # Check if the command contains any dangerous patterns
+        if any(dc in command for dc in dangerous_commands):
+            return CommandExecutionResult(
+                success=False,
+                stdout="",
+                stderr="Command execution blocked for security reasons.",
+                exit_code=1
+            )
+        
+        try:
+            # Execute the command
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30  # Timeout after 30 seconds
+            )
+            
+            return CommandExecutionResult(
+                success=result.returncode == 0,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                exit_code=result.returncode
+            )
+            
+        except subprocess.TimeoutExpired:
+            return CommandExecutionResult(
+                success=False,
+                stdout="",
+                stderr="Command execution timed out after 30 seconds",
+                exit_code=1
+            )
+        except Exception as e:
+            return CommandExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Error executing command: {str(e)}",
+                exit_code=1
+            )
     
     def _create_step_execution_prompt(
         self,
@@ -105,6 +259,33 @@ class StepExecutor:
         # Add additional context if provided
         context_info = f"\n\n## ADDITIONAL CONTEXT\n{additional_context}" if additional_context else ""
         
+        # Add execution capabilities information
+        capabilities_info = "\n\n## EXECUTION CAPABILITIES\n"
+        if self.allow_code_execution:
+            capabilities_info += """You can execute Python code by including it in your response using the following format:
+```execute_python
+# Your Python code here
+import pandas as pd
+data = {'Name': ['John', 'Anna'], 'Age': [28, 34]}
+df = pd.DataFrame(data)
+print(df)
+```
+
+The code will be executed, and the results will be stored and available for subsequent steps.
+"""
+        
+        if self.allow_command_execution:
+            capabilities_info += """You can execute terminal commands by including them in your response using the following format:
+```execute_command
+ls -la
+```
+
+The command will be executed, and the results will be stored and available for subsequent steps.
+"""
+        
+        if not self.allow_code_execution and not self.allow_command_execution:
+            capabilities_info = ""  # Remove capabilities section if nothing is allowed
+        
         system_prompt = f"""You are an expert research assistant executing a specific step in a research plan. YOU MUST RETURN OUTPUT IN JSON FORMAT.
 
 ## RESEARCH PLAN OVERVIEW
@@ -117,7 +298,7 @@ Step ID: {step.id}
 Title: {step.title}
 Goal: {step.goal}
 Description: {step.description}
-Expected Output: {step.expected_output}{dependency_info}{context_info}
+Expected Output: {step.expected_output}{dependency_info}{context_info}{capabilities_info}
 
 Execute this research step thoroughly. Think step-by-step about how to achieve the goal. 
 Your response must be in the following JSON format:
@@ -129,11 +310,32 @@ Your response must be in the following JSON format:
   "artifacts": {{
     "notes": "Any additional notes or information",
     "references": ["Reference 1", "Reference 2"]
-  }}
-}}
-
-Make sure your findings directly address the goal of this step and provide the expected output.
+  }}"""
+        
+        if self.allow_code_execution:
+            system_prompt += """,
+  "code_blocks": [
+    {
+      "code": "import pandas as pd\\ndf = pd.DataFrame({'A': [1, 2]})\\nprint(df)",
+      "description": "Analysis of dataset with pandas"
+    }
+  ]"""
+        
+        if self.allow_command_execution:
+            system_prompt += """,
+  "command_blocks": [
+    {
+      "command": "ls -la",
+      "description": "List files in the current directory"
+    }
+  ]"""
+        
+        system_prompt += "\n}\n\n"
+        
+        system_prompt += """Make sure your findings directly address the goal of this step and provide the expected output.
 The 'learning' field should capture the most important insight that should be carried forward to dependent steps.
+
+If you use code or command execution, include the code or commands in the appropriate blocks in your JSON response.
 """
         return system_prompt
     
@@ -215,6 +417,47 @@ The 'learning' field should capture the most important insight that should be ca
                     # Parse the JSON
                     result_data = json.loads(json_content)
                     
+                    # Execute any code blocks
+                    code_execution_results = []
+                    if self.allow_code_execution and "code_blocks" in result_data:
+                        for code_block in result_data.get("code_blocks", []):
+                            code = code_block.get("code", "")
+                            description = code_block.get("description", "")
+                            
+                            if code:
+                                # Execute the code
+                                execution_result = self.execute_python_code(code)
+                                
+                                # Store execution result
+                                code_execution_results.append({
+                                    "code": code,
+                                    "description": description,
+                                    "success": execution_result.success,
+                                    "output": execution_result.output,
+                                    "error": execution_result.error
+                                })
+                    
+                    # Execute any command blocks
+                    command_execution_results = []
+                    if self.allow_command_execution and "command_blocks" in result_data:
+                        for command_block in result_data.get("command_blocks", []):
+                            command = command_block.get("command", "")
+                            description = command_block.get("description", "")
+                            
+                            if command:
+                                # Execute the command
+                                execution_result = self.execute_command(command)
+                                
+                                # Store execution result
+                                command_execution_results.append({
+                                    "command": command,
+                                    "description": description,
+                                    "success": execution_result.success,
+                                    "stdout": execution_result.stdout,
+                                    "stderr": execution_result.stderr,
+                                    "exit_code": execution_result.exit_code
+                                })
+                    
                     # Create StepResult
                     step_result = StepResult(
                         step_id=step.id,
@@ -222,7 +465,9 @@ The 'learning' field should capture the most important insight that should be ca
                         findings=result_data.get("findings", ""),
                         learning=result_data.get("learning", ""),
                         next_steps=result_data.get("next_steps", []),
-                        artifacts=result_data.get("artifacts", {})
+                        artifacts=result_data.get("artifacts", {}),
+                        code_executions=code_execution_results,
+                        command_executions=command_execution_results
                     )
                     
                     # Add to execution history
@@ -388,7 +633,9 @@ def create_step_executor(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     temperature: float = 0.7,
-    max_tokens: int = 2048
+    max_tokens: int = 2048,
+    allow_code_execution: bool = False,
+    allow_command_execution: bool = False
 ) -> StepExecutor:
     """
     Create a StepExecutor instance with configuration.
@@ -398,6 +645,8 @@ def create_step_executor(
         model: Model to use (default: from config or claude)
         temperature: Temperature for generation (default: 0.7)
         max_tokens: Max tokens for generation (default: 2048)
+        allow_code_execution: Whether to allow Python code execution (default: False)
+        allow_command_execution: Whether to allow terminal command execution (default: False)
         
     Returns:
         Configured StepExecutor instance
@@ -409,5 +658,7 @@ def create_step_executor(
     return StepExecutor(
         service=service,
         temperature=temperature,
-        max_tokens=max_tokens
+        max_tokens=max_tokens,
+        allow_code_execution=allow_code_execution,
+        allow_command_execution=allow_command_execution
     ) 

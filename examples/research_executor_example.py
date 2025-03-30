@@ -25,7 +25,9 @@ def run_research_workflow(
     temperature: float = 0.2,
     executor_temperature: float = 0.7,
     output_file: str = None,
-    additional_context: str = None
+    additional_context: str = None,
+    allow_code_execution: bool = False,
+    allow_command_execution: bool = False
 ) -> List[StepResult]:
     """
     Generate and execute a research plan.
@@ -40,6 +42,8 @@ def run_research_workflow(
         executor_temperature: Temperature for step execution (default: 0.7)
         output_file: File to save the results to (optional)
         additional_context: Additional context for execution (optional)
+        allow_code_execution: Whether to allow Python code execution (default: False)
+        allow_command_execution: Whether to allow terminal command execution (default: False)
         
     Returns:
         List of step execution results
@@ -80,8 +84,14 @@ def run_research_workflow(
     # Create executor
     executor = create_step_executor(
         model=executor_model,
-        temperature=executor_temperature
+        temperature=executor_temperature,
+        allow_code_execution=allow_code_execution,
+        allow_command_execution=allow_command_execution
     )
+    
+    # Print execution capabilities
+    print(f"Code execution: {'✓ Enabled' if allow_code_execution else '✗ Disabled'}")
+    print(f"Command execution: {'✓ Enabled' if allow_command_execution else '✗ Disabled'}")
     
     # Execute all steps in the plan
     results = executor.execute_plan(
@@ -105,7 +115,7 @@ def run_research_workflow(
         
         if result.success:
             print(f"   Key Learning: {result.learning}")
-            print(f"   Findings Summary: {result.findings[:200]}...")
+            print(f"   Findings Summary: {result.findings[:200]}..." if len(result.findings) > 200 else f"   Findings: {result.findings}")
             
             if result.next_steps:
                 print(f"   Suggested Next Steps: {', '.join(result.next_steps[:3])}")
@@ -114,6 +124,32 @@ def run_research_workflow(
                 refs = result.artifacts['references']
                 if refs and isinstance(refs, list):
                     print(f"   References: {', '.join(refs[:3])}")
+            
+            # Display code execution results
+            if result.code_executions:
+                print(f"\n   Code Executions ({len(result.code_executions)}):")
+                for j, code_exec in enumerate(result.code_executions, 1):
+                    print(f"     {j}. {code_exec['description']}")
+                    print(f"        Status: {'✓ Success' if code_exec['success'] else '✗ Failed'}")
+                    if code_exec['success']:
+                        output = code_exec['output'].strip()
+                        print(f"        Output: {output[:100]}..." if len(output) > 100 else f"        Output: {output}")
+                    else:
+                        print(f"        Error: {code_exec['error']}")
+            
+            # Display command execution results
+            if result.command_executions:
+                print(f"\n   Command Executions ({len(result.command_executions)}):")
+                for j, cmd_exec in enumerate(result.command_executions, 1):
+                    print(f"     {j}. {cmd_exec['description']}")
+                    print(f"        Command: {cmd_exec['command']}")
+                    print(f"        Status: {'✓ Success' if cmd_exec['success'] else '✗ Failed'}")
+                    if cmd_exec['success']:
+                        stdout = cmd_exec['stdout'].strip()
+                        print(f"        Output: {stdout[:100]}..." if len(stdout) > 100 else f"        Output: {stdout}")
+                    else:
+                        print(f"        Error: {cmd_exec['stderr']}")
+                        print(f"        Exit Code: {cmd_exec['exit_code']}")
         else:
             print(f"   Error: {result.error}")
     
@@ -159,6 +195,10 @@ def main():
                         help="Additional context for research execution")
     parser.add_argument("--output", type=str,
                         help="File to save the research results to (as JSON)")
+    parser.add_argument("--allow-code", action="store_true",
+                        help="Allow Python code execution")
+    parser.add_argument("--allow-commands", action="store_true",
+                        help="Allow terminal command execution")
     
     args = parser.parse_args()
     
@@ -172,7 +212,9 @@ def main():
         temperature=args.temperature,
         executor_temperature=args.executor_temperature,
         additional_context=args.context,
-        output_file=args.output
+        output_file=args.output,
+        allow_code_execution=args.allow_code,
+        allow_command_execution=args.allow_commands
     )
 
 
