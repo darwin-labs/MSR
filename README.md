@@ -6,7 +6,7 @@ A framework to enhance the reasoning capabilities of foundation models through s
 
 This project implements a Multi-Step Reasoning architecture designed to improve the problem-solving capabilities of base language models. By guiding models through explicit reasoning steps before generating final answers, we aim to reduce errors and enhance performance on complex tasks.
 
-![Multi-Step Reasoning Architecture](static/assets/Multi-Step%20Reasoning%20Architecture%20Horizontal.png)
+![Multi-Step Reasoning Architecture](static/assets/Multi-Step-Reasoning-Architecture-Horizontal.png)
 
 ## Core Model
 
