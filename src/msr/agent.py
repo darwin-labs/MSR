@@ -5,17 +5,22 @@ import os
 import sys
 import json
 import asyncio
+import uuid
+import logging
 from typing import Dict, List, Optional, Any, Union, Callable, Set, Type
 from enum import Enum, auto
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from datetime import datetime
 
 # Add parent directory to path if needed
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.llm_service.openrouter_service import OpenRouterService, create_openrouter_service
+from src.llm_service.openrouter_service import OpenRouterService, create_openrouter_service, create_service_for_task
 from src.utils.config import config_manager
 from src.msr.planner_llm import PlannerLLM, ResearchPlan, ResearchStep
 from src.msr.step_executor import StepExecutor, StepResult
+from src.msr.logger import get_logger, LogEventType
 
 
 class ToolType(Enum):
@@ -89,13 +94,11 @@ class Agent:
         self,
         task: str,
         allowed_tools: Optional[Set[ToolType]] = None,
-        planner_model: Optional[str] = None,
-        executor_model: Optional[str] = None,
-        planner_temperature: float = 0.2,
-        executor_temperature: float = 0.7,
-        max_tokens: int = 2048,
-        requires_tool_approval: bool = True,
+        service: OpenRouterService = None,
+        agent_id: Optional[str] = None,
+        temperature: float = 0.7,
         save_state_path: Optional[str] = None,
+        require_step_approval: bool = True,
         **kwargs
     ):
         """
@@ -104,16 +107,23 @@ class Agent:
         Args:
             task: The task to perform
             allowed_tools: Set of allowed tool types
-            planner_model: Model for plan generation
-            executor_model: Model for step execution
-            planner_temperature: Temperature for plan generation
-            executor_temperature: Temperature for step execution
-            max_tokens: Max tokens for generation
-            requires_tool_approval: Whether tools require approval
+            service: LLM service for the agent
+            agent_id: Unique identifier for the agent (generated if not provided)
+            temperature: Temperature for generation
             save_state_path: Path to save agent state
+            require_step_approval: Whether to require approval for step execution
             **kwargs: Additional parameters
         """
         self.task = task
+        
+        # Generate unique agent_id if not provided
+        self.agent_id = agent_id or f"agent-{uuid.uuid4().hex[:8]}"
+        
+        # Generate unique task_id for logging
+        self.task_id = f"task-{uuid.uuid4().hex[:8]}"
+        
+        # Get logger
+        self.logger = get_logger()
         
         # Initialize state
         self.state = AgentState(task=task)
@@ -124,35 +134,51 @@ class Agent:
         self.allowed_tools = allowed_tools
         
         # Configure tool approval
-        self.requires_tool_approval = requires_tool_approval
-        
-        # Get models from config or parameters
-        self.planner_model = planner_model or config_manager.get("PLANNER_MODEL", "anthropic/claude-3-opus-20240229")
-        self.executor_model = executor_model or config_manager.get("EXECUTOR_MODEL", "anthropic/claude-3-opus-20240229")
+        self.require_step_approval = require_step_approval
         
         # Set temperatures
-        self.planner_temperature = planner_temperature
-        self.executor_temperature = executor_temperature
-        
-        # Set max tokens
-        self.max_tokens = max_tokens
-        
-        # Additional parameters
-        self.kwargs = kwargs
+        self.temperature = temperature
         
         # State saving path
         self.save_state_path = save_state_path
         
-        # Initialize components
-        self._initialize_components()
+        # Additional parameters
+        self.kwargs = kwargs
         
-    def _initialize_components(self):
+        # Initialize components
+        self._initialize_components(service)
+        
+        # Log agent initialization
+        self._log_initialization()
+    
+    def _log_initialization(self):
+        """Log agent initialization."""
+        allowed_tool_names = [t.name for t in self.allowed_tools]
+        
+        self.logger.log_agent_initialized(
+            agent_id=self.agent_id,
+            task=self.task,
+            allowed_tools=allowed_tool_names,
+            context={
+                "temperature": self.temperature,
+                "state_path": self.save_state_path
+            }
+        )
+        
+        # Log task started
+        self.logger.log_task_started(
+            agent_id=self.agent_id,
+            task_id=self.task_id,
+            task_description=self.task
+        )
+        
+    def _initialize_components(self, service: OpenRouterService):
         """Initialize the planner and executor components."""
         # Create planner
         self.planner = PlannerLLM(
-            model=self.planner_model,
-            temperature=self.planner_temperature,
-            max_tokens=self.max_tokens
+            model=service,
+            temperature=self.temperature,
+            max_tokens=self.kwargs.get("max_tokens", 2048)
         )
         
         # Create executor
@@ -160,9 +186,9 @@ class Agent:
         allow_command_execution = ToolType.TERMINAL_COMMAND in self.allowed_tools
         
         self.executor = StepExecutor(
-            model=self.executor_model,
-            temperature=self.executor_temperature,
-            max_tokens=self.max_tokens,
+            model=service,
+            temperature=self.temperature,
+            max_tokens=self.kwargs.get("max_tokens", 2048),
             allow_code_execution=allow_code_execution,
             allow_command_execution=allow_command_execution
         )
@@ -170,8 +196,23 @@ class Agent:
     def save_state(self):
         """Save the current state of the agent."""
         if self.save_state_path:
-            with open(self.save_state_path, 'w') as f:
-                f.write(self.state.to_json())
+            try:
+                with open(self.save_state_path, 'w') as f:
+                    f.write(self.state.to_json())
+                
+                # Log state saved
+                self.logger.log_state_saved(
+                    agent_id=self.agent_id,
+                    path=self.save_state_path
+                )
+            except Exception as e:
+                # Log error
+                self.logger.error(
+                    message=f"Failed to save agent state: {str(e)}",
+                    event_type=LogEventType.ERROR,
+                    agent_id=self.agent_id,
+                    context={"path": self.save_state_path}
+                )
     
     def load_state(self, state_path: Optional[str] = None):
         """
@@ -182,6 +223,10 @@ class Agent:
         """
         path = state_path or self.save_state_path
         if not path or not os.path.exists(path):
+            self.logger.warning(
+                message=f"State file not found: {path}",
+                agent_id=self.agent_id
+            )
             return False
         
         try:
@@ -220,10 +265,26 @@ class Agent:
             self.state.context = state_data.get("context", {})
             self.state.is_complete = state_data.get("is_complete", False)
             
+            # Log state loaded
+            self.logger.log_state_loaded(
+                agent_id=self.agent_id,
+                path=path,
+                success=True
+            )
+            
             return True
             
         except Exception as e:
-            print(f"Error loading state: {str(e)}")
+            error_msg = f"Error loading state: {str(e)}"
+            
+            # Log error
+            self.logger.log_state_loaded(
+                agent_id=self.agent_id,
+                path=path,
+                success=False,
+                error=error_msg
+            )
+            
             return False
     
     async def generate_plan_async(
@@ -250,18 +311,53 @@ class Agent:
         if additional_context:
             prompt = f"{prompt}\n\nContext: {additional_context}"
         
-        # Generate the plan
-        self.state.plan = await self.planner.generate_plan_async(
+        # Log plan generation started
+        self.logger.log_plan_generation_started(
+            agent_id=self.agent_id,
+            task_id=self.task_id,
             prompt=prompt,
-            num_steps=num_steps,
-            domain=domain,
-            **kwargs
+            context={
+                "num_steps": num_steps,
+                "domain": domain
+            }
         )
         
-        # Save state after generating plan
-        self.save_state()
-        
-        return self.state.plan
+        try:
+            # Generate the plan
+            self.state.plan = await self.planner.generate_plan_async(
+                prompt=prompt,
+                num_steps=num_steps,
+                domain=domain,
+                **kwargs
+            )
+            
+            # Log plan generation completed
+            if self.state.plan:
+                self.logger.log_plan_generation_completed(
+                    agent_id=self.agent_id,
+                    task_id=self.task_id,
+                    plan_title=self.state.plan.title,
+                    num_steps=len(self.state.plan.steps),
+                    context={
+                        "objective": self.state.plan.objective,
+                        "description": self.state.plan.description
+                    }
+                )
+            
+            # Save state after generating plan
+            self.save_state()
+            
+            return self.state.plan
+            
+        except Exception as e:
+            # Log error
+            self.logger.error(
+                message=f"Plan generation failed: {str(e)}",
+                event_type=LogEventType.ERROR,
+                agent_id=self.agent_id,
+                task_id=self.task_id
+            )
+            raise
     
     def generate_plan(
         self,
@@ -315,7 +411,13 @@ class Agent:
         """
         # Check if plan exists
         if not self.state.plan or not self.state.plan.steps:
-            raise ValueError("No plan generated. Call generate_plan first.")
+            error_msg = "No plan generated. Call generate_plan first."
+            self.logger.error(
+                message=error_msg,
+                agent_id=self.agent_id,
+                task_id=self.task_id
+            )
+            raise ValueError(error_msg)
         
         # Determine which step to execute
         if step_index is None:
@@ -323,38 +425,133 @@ class Agent:
         
         # Check if step index is valid
         if step_index < 0 or step_index >= len(self.state.plan.steps):
-            raise ValueError(f"Step index {step_index} out of range (0-{len(self.state.plan.steps)-1})")
+            error_msg = f"Step index {step_index} out of range (0-{len(self.state.plan.steps)-1})"
+            self.logger.error(
+                message=error_msg,
+                agent_id=self.agent_id,
+                task_id=self.task_id
+            )
+            raise ValueError(error_msg)
         
         # Get the step to execute
         step = self.state.plan.steps[step_index]
         
+        # Log step execution started
+        self.logger.log_step_execution_started(
+            agent_id=self.agent_id,
+            task_id=self.task_id,
+            step_id=step.id,
+            step_title=step.title,
+            context={
+                "step_goal": step.goal,
+                "step_description": step.description
+            }
+        )
+        
         # Get previous results for dependencies
         previous_results = [r for r in self.state.step_results if r.step_id in step.dependencies]
         
-        # Execute the step
-        result = await self.executor.execute_step_async(
-            step=step,
-            research_plan=self.state.plan,
-            previous_results=previous_results if previous_results else None,
-            additional_context=additional_context,
-            **kwargs
-        )
-        
-        # Store the result
-        self.state.step_results.append(result)
-        
-        # Update current step index if this is the current step
-        if step_index == self.state.current_step_index:
-            self.state.current_step_index += 1
-        
-        # Check if all steps are complete
-        if self.state.current_step_index >= len(self.state.plan.steps):
-            self.state.is_complete = True
-        
-        # Save state after executing step
-        self.save_state()
-        
-        return result
+        try:
+            # Execute the step
+            result = await self.executor.execute_step_async(
+                step=step,
+                research_plan=self.state.plan,
+                previous_results=previous_results if previous_results else None,
+                additional_context=additional_context,
+                **kwargs
+            )
+            
+            # Log step execution completed
+            self.logger.log_step_execution_completed(
+                agent_id=self.agent_id,
+                task_id=self.task_id,
+                step_id=step.id,
+                success=result.success,
+                findings=result.findings[:200] + "..." if len(result.findings) > 200 else result.findings,
+                learning=result.learning,
+                context={
+                    "next_steps": result.next_steps,
+                    "error": result.error
+                }
+            )
+            
+            # Log any code executions
+            for i, code_exec in enumerate(result.code_executions):
+                self.logger.log_tool_execution(
+                    agent_id=self.agent_id,
+                    task_id=self.task_id,
+                    tool_name="execute_python",
+                    success=code_exec.get("success", False),
+                    input_data=code_exec.get("code", "")[:100] + "..." if len(code_exec.get("code", "")) > 100 else code_exec.get("code", ""),
+                    output_data=code_exec.get("output", "")[:100] + "..." if len(code_exec.get("output", "")) > 100 else code_exec.get("output", ""),
+                    error=code_exec.get("error"),
+                    context={
+                        "description": code_exec.get("description", ""),
+                        "step_id": step.id
+                    }
+                )
+            
+            # Log any command executions
+            for i, cmd_exec in enumerate(result.command_executions):
+                self.logger.log_tool_execution(
+                    agent_id=self.agent_id,
+                    task_id=self.task_id,
+                    tool_name="execute_command",
+                    success=cmd_exec.get("success", False),
+                    input_data=cmd_exec.get("command", ""),
+                    output_data=cmd_exec.get("stdout", "")[:100] + "..." if len(cmd_exec.get("stdout", "")) > 100 else cmd_exec.get("stdout", ""),
+                    error=cmd_exec.get("stderr"),
+                    context={
+                        "description": cmd_exec.get("description", ""),
+                        "exit_code": cmd_exec.get("exit_code"),
+                        "step_id": step.id
+                    }
+                )
+            
+            # Store the result
+            self.state.step_results.append(result)
+            
+            # Update current step index if this is the current step
+            if step_index == self.state.current_step_index:
+                self.state.current_step_index += 1
+            
+            # Check if all steps are complete
+            if self.state.current_step_index >= len(self.state.plan.steps):
+                self.state.is_complete = True
+                
+                # Log task completion if all steps are done
+                if self.state.is_complete:
+                    success_rate = len([r for r in self.state.step_results if r.success]) / len(self.state.step_results)
+                    
+                    self.logger.log_task_completed(
+                        agent_id=self.agent_id,
+                        task_id=self.task_id,
+                        success=success_rate > 0.5,  # Consider success if more than half of steps succeeded
+                        result_summary={
+                            "total_steps": len(self.state.step_results),
+                            "successful_steps": len([r for r in self.state.step_results if r.success]),
+                            "success_rate": success_rate
+                        }
+                    )
+            
+            # Save state after executing step
+            self.save_state()
+            
+            return result
+            
+        except Exception as e:
+            # Log error
+            self.logger.error(
+                message=f"Step execution failed: {str(e)}",
+                event_type=LogEventType.ERROR,
+                agent_id=self.agent_id,
+                task_id=self.task_id,
+                context={
+                    "step_id": step.id,
+                    "step_title": step.title
+                }
+            )
+            raise
     
     def execute_step(
         self,
@@ -403,24 +600,68 @@ class Agent:
         """
         # Check if plan exists
         if not self.state.plan or not self.state.plan.steps:
-            raise ValueError("No plan generated. Call generate_plan first.")
+            error_msg = "No plan generated. Call generate_plan first."
+            self.logger.error(
+                message=error_msg,
+                agent_id=self.agent_id,
+                task_id=self.task_id
+            )
+            raise ValueError(error_msg)
         
         # Reset execution state
         self.state.current_step_index = 0
         self.state.step_results = []
         self.state.is_complete = False
         
-        # Execute all steps
-        results = await self.executor.execute_plan_async(
-            research_plan=self.state.plan,
-            additional_context=additional_context,
-            **kwargs
+        self.logger.info(
+            message=f"Executing plan: {self.state.plan.title} with {len(self.state.plan.steps)} steps",
+            agent_id=self.agent_id,
+            task_id=self.task_id
         )
+        
+        # Execute all steps one by one
+        results = []
+        for i, step in enumerate(self.state.plan.steps):
+            try:
+                result = await self.execute_step_async(
+                    step_index=i,
+                    additional_context=additional_context,
+                    **kwargs
+                )
+                results.append(result)
+            except Exception as e:
+                self.logger.error(
+                    message=f"Failed to execute step {i}: {str(e)}",
+                    agent_id=self.agent_id,
+                    task_id=self.task_id
+                )
+                # Create failure result
+                result = StepResult(
+                    step_id=step.id,
+                    success=False,
+                    findings="Step execution failed",
+                    learning="Handle errors in step execution",
+                    error=str(e)
+                )
+                results.append(result)
         
         # Update state
         self.state.step_results = results
         self.state.current_step_index = len(self.state.plan.steps)
         self.state.is_complete = True
+        
+        # Log task completion
+        success_rate = len([r for r in results if r.success]) / len(results) if results else 0
+        self.logger.log_task_completed(
+            agent_id=self.agent_id,
+            task_id=self.task_id,
+            success=success_rate > 0.5,  # Consider success if more than half of steps succeeded
+            result_summary={
+                "total_steps": len(results),
+                "successful_steps": len([r for r in results if r.success]),
+                "success_rate": success_rate
+            }
+        )
         
         # Save state after executing plan
         self.save_state()
@@ -473,6 +714,12 @@ class Agent:
         Returns:
             Dictionary with plan and execution results
         """
+        self.logger.info(
+            message=f"Starting full workflow for task: {self.task}",
+            agent_id=self.agent_id,
+            task_id=self.task_id
+        )
+        
         # Generate plan
         plan = self.generate_plan(
             num_steps=num_steps,
@@ -524,7 +771,7 @@ class Agent:
                 type=ToolType.PYTHON_CODE,
                 name="execute_python",
                 description="Execute Python code and return the result",
-                requires_approval=self.requires_tool_approval
+                requires_approval=self.require_step_approval
             ))
         
         if ToolType.TERMINAL_COMMAND in self.allowed_tools:
@@ -532,7 +779,7 @@ class Agent:
                 type=ToolType.TERMINAL_COMMAND,
                 name="execute_command",
                 description="Execute a terminal command and return the result",
-                requires_approval=self.requires_tool_approval
+                requires_approval=self.require_step_approval
             ))
             
         if ToolType.WEB_SEARCH in self.allowed_tools:
@@ -540,7 +787,7 @@ class Agent:
                 type=ToolType.WEB_SEARCH,
                 name="web_search",
                 description="Search the web for information",
-                requires_approval=self.requires_tool_approval
+                requires_approval=self.require_step_approval
             ))
             
         if ToolType.FILE_READ in self.allowed_tools:
@@ -548,7 +795,7 @@ class Agent:
                 type=ToolType.FILE_READ,
                 name="read_file",
                 description="Read a file and return its contents",
-                requires_approval=self.requires_tool_approval
+                requires_approval=self.require_step_approval
             ))
             
         if ToolType.FILE_WRITE in self.allowed_tools:
@@ -556,7 +803,7 @@ class Agent:
                 type=ToolType.FILE_WRITE,
                 name="write_file",
                 description="Write content to a file",
-                requires_approval=self.requires_tool_approval
+                requires_approval=self.require_step_approval
             ))
             
         if ToolType.DATA_ANALYSIS in self.allowed_tools:
@@ -564,7 +811,7 @@ class Agent:
                 type=ToolType.DATA_ANALYSIS,
                 name="analyze_data",
                 description="Analyze data using pandas and return insights",
-                requires_approval=self.requires_tool_approval
+                requires_approval=self.require_step_approval
             ))
             
         if ToolType.VISUALIZATION in self.allowed_tools:
@@ -572,7 +819,7 @@ class Agent:
                 type=ToolType.VISUALIZATION,
                 name="create_visualization",
                 description="Create a visualization of data",
-                requires_approval=self.requires_tool_approval
+                requires_approval=self.require_step_approval
             ))
             
         return tools
@@ -582,27 +829,54 @@ class Agent:
 def create_agent(
     task: str,
     allowed_tools: Optional[Set[ToolType]] = None,
-    planner_model: Optional[str] = None,
-    executor_model: Optional[str] = None,
-    save_state_path: Optional[str] = None
+    agent_id: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: float = 0.7,
+    save_state_path: Optional[str] = None,
+    require_step_approval: bool = True
 ) -> Agent:
     """
-    Create an Agent instance for the given task.
+    Create an agent with the specified parameters.
     
     Args:
         task: The task to perform
         allowed_tools: Set of allowed tool types
-        planner_model: Model for plan generation
-        executor_model: Model for step execution
+        agent_id: Optional agent ID (UUID will be generated if not provided)
+        model: Model to use for the agent (will be automatically selected if not provided)
+        temperature: Temperature for generation
         save_state_path: Path to save agent state
+        require_step_approval: Whether to require approval for step execution
         
     Returns:
         Configured Agent instance
     """
-    return Agent(
+    # Generate agent ID if not provided
+    if not agent_id:
+        agent_id = str(uuid.uuid4())
+    
+    # Automatically select the best LLM service for this task
+    if model is None:
+        try:
+            # Use the model selector to get the best service for this task
+            service = create_service_for_task(task)
+        except Exception as e:
+            # Fall back to default model if selection fails
+            print(f"Warning: Task-specific model selection failed: {str(e)}")
+            print("Using default model instead.")
+            service = create_openrouter_service()
+    else:
+        # Use specified model
+        service = create_openrouter_service(model=model)
+    
+    # Create agent
+    agent = Agent(
         task=task,
         allowed_tools=allowed_tools,
-        planner_model=planner_model,
-        executor_model=executor_model,
-        save_state_path=save_state_path
-    ) 
+        service=service,
+        agent_id=agent_id,
+        temperature=temperature,
+        save_state_path=save_state_path,
+        require_step_approval=require_step_approval
+    )
+    
+    return agent 

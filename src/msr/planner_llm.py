@@ -5,6 +5,8 @@ import os
 import sys
 import json
 import asyncio
+import re
+import uuid
 from typing import Dict, List, Optional, Any, Union, TypedDict
 from dataclasses import dataclass, field, asdict
 
@@ -12,6 +14,7 @@ from dataclasses import dataclass, field, asdict
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.llm_service.openrouter_service import OpenRouterService, create_openrouter_service
+from src.llm_service.model_selector import TaskType, get_service_for_task
 from src.utils.config import config_manager
 
 
@@ -74,36 +77,49 @@ class ResearchPlan:
 
 class PlannerLLM:
     """
-    LLM-based research planner that generates structured research plans.
+    Service for generating structured research plans using LLMs.
     """
     
     def __init__(
-        self, 
+        self,
         service: Optional[OpenRouterService] = None,
         model: Optional[str] = None,
-        temperature: float = 0.2,  # Lower temperature for more structured/deterministic output
-        max_tokens: int = 2048,
+        temperature: float = 0.3,  # Lower temperature for more structured output
+        max_tokens: int = 4096,
+        max_steps: int = 7,
         **kwargs
     ):
         """
-        Initialize the PlannerLLM.
+        Initialize the planner service.
         
         Args:
             service: OpenRouter service instance (created if not provided)
             model: Model to use (default: from config or anthropic/claude-3-opus)
-            temperature: Default temperature for generation (default: 0.2)
-            max_tokens: Default max tokens for generation (default: 2048)
+            temperature: Default temperature for generation (default: 0.3)
+            max_tokens: Default max tokens for generation (default: 4096)
+            max_steps: Maximum number of steps to generate (default: 7)
             **kwargs: Additional parameters for generation
         """
-        # Use Claude as default model for better structured JSON output
+        # Use Claude as default model for better planning and JSON formatting
         default_model = model or config_manager.get("PLANNER_MODEL", "anthropic/claude-3-opus-20240229")
         
-        # Create service if not provided
-        self.service = service or create_openrouter_service(model=default_model)
+        # Create service if not provided, optimized for planning
+        if service is None:
+            planning_task = "Create a structured research plan with clear steps and dependencies"
+            
+            # Try to use model selector first, fall back to direct service creation
+            try:
+                service = get_service_for_task(planning_task)
+            except Exception as e:
+                print(f"Warning: Could not use model selector: {str(e)}")
+                service = create_openrouter_service(model=default_model)
+        
+        self.service = service
         
         # Store generation parameters
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.max_steps = max_steps
         self.kwargs = kwargs
     
     def _create_planning_prompt(

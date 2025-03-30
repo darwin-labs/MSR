@@ -250,26 +250,57 @@ class OpenRouterService(LLMService):
         """Async context manager exit."""
         await self._close_session()
 
+    @property
+    def model(self) -> str:
+        """
+        Get the current model being used by this service.
+        
+        Returns:
+            Model identifier
+        """
+        return self.default_model
 
-# Convenience function to create an instance with config
+
+# Helper function to create an OpenRouterService
 def create_openrouter_service(
     api_key: Optional[str] = None,
     model: Optional[str] = None
 ) -> OpenRouterService:
     """
-    Create an OpenRouter service instance with configuration.
+    Create an OpenRouterService with the specified parameters.
     
     Args:
-        api_key: OpenRouter API key (optional)
-        model: Default model to use (optional)
+        api_key: OpenRouter API key (optional, will use config if not provided)
+        model: Model to use (default: from config or qwen/qwen2.5-32b-instruct)
         
     Returns:
         Configured OpenRouterService instance
     """
-    # Get API key from parameter or config
-    api_key = api_key or config_manager.get_api_key("openrouter")
+    # Get model from config if not provided
+    if model is None:
+        model = config_manager.get("DEFAULT_MODEL", "qwen/qwen2.5-32b-instruct")
     
-    # Get default model from config or use default
-    default_model = model or config_manager.get("DEFAULT_MODEL", "qwen/qwen2.5-32b-instruct")
+    # Create and return service
+    return OpenRouterService(api_key=api_key, default_model=model)
+
+
+def create_service_for_task(
+    task_description: str,
+    api_key: Optional[str] = None
+) -> OpenRouterService:
+    """
+    Create an OpenRouterService optimized for a specific task.
+    This uses the model_selector to determine the best model for the task.
     
-    return OpenRouterService(api_key=api_key, default_model=default_model) 
+    Args:
+        task_description: Description of the task
+        api_key: OpenRouter API key (optional, will use config if not provided)
+        
+    Returns:
+        OpenRouterService configured with the appropriate model for the task
+    """
+    # Import here to avoid circular imports
+    from src.llm_service.model_selector import get_service_for_task
+    
+    # Get the appropriate service for the task
+    return get_service_for_task(task_description) 
