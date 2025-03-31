@@ -140,13 +140,15 @@ def main():
     # Plan configuration
     parser.add_argument("--steps", help="Maximum number of steps in the plan", type=int, default=3)
     
-    # Tool enablement
-    parser.add_argument("--enable-python", help="Enable Python code execution", action="store_true")
-    parser.add_argument("--enable-terminal", help="Enable terminal commands", action="store_true")
+    # Tool enablement - note that Python and Terminal execution are now enabled by default
+    parser.add_argument("--enable-python", help="Enable Python code execution", action="store_true", default=True)
+    parser.add_argument("--enable-terminal", help="Enable terminal commands", action="store_true", default=True)
     parser.add_argument("--enable-web-search", help="Enable web search", action="store_true")
     parser.add_argument("--enable-file-operations", help="Enable file operations", action="store_true")
     parser.add_argument("--enable-data-analysis", help="Enable data analysis", action="store_true")
     parser.add_argument("--enable-visualization", help="Enable data visualization", action="store_true")
+    parser.add_argument("--disable-python", help="Disable Python code execution", action="store_true")
+    parser.add_argument("--disable-terminal", help="Disable terminal commands", action="store_true")
     
     # Output and execution options
     parser.add_argument("--output-file", help="File path to save the agent state as JSON", type=str)
@@ -159,6 +161,10 @@ def main():
     
     args = parser.parse_args()
     
+    # Handle enable/disable flags for Python and Terminal
+    enable_python = args.enable_python and not args.disable_python
+    enable_terminal = args.enable_terminal and not args.disable_terminal
+    
     # Run the agent with the specified configuration
     asyncio.run(run_agent(
         task=args.task,
@@ -167,8 +173,8 @@ def main():
         steps=args.steps,
         output_file=args.output_file,
         approve_execution=not args.no_approval,
-        enable_python=args.enable_python,
-        enable_terminal=args.enable_terminal,
+        enable_python=enable_python,
+        enable_terminal=enable_terminal,
         enable_web_search=args.enable_web_search,
         enable_file_operations=args.enable_file_operations,
         enable_data_analysis=args.enable_data_analysis,

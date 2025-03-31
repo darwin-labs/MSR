@@ -190,7 +190,8 @@ class Agent:
             temperature=self.temperature,
             max_tokens=self.kwargs.get("max_tokens", 2048),
             allow_code_execution=allow_code_execution,
-            allow_command_execution=allow_command_execution
+            allow_command_execution=allow_command_execution,
+            share_output_with_llm=True  # Always share execution results with the LLM
         )
     
     def save_state(self):
