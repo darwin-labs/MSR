@@ -402,75 +402,8 @@ class StepExecutor:
         
         # Add additional context if provided
         context_info = f"\n\n## ADDITIONAL CONTEXT\n{additional_context}" if additional_context else ""
-        
-        # Add execution capabilities information based on enabled tools
-        capabilities_info = "\n\n## AVAILABLE TOOLS\n"
-        
-        # Add Python code execution if enabled
-        if self.allow_code_execution:
-            capabilities_info += """You can execute Python code by including it in your response like this:
-```python
-# Your Python code here
-import pandas as pd
-data = {'Name': ['John', 'Anna'], 'Age': [28, 34]}
-df = pd.DataFrame(data)
-print(df)
-```
 
-The code will be executed, and the results will be shown to you for analysis.
-"""
-        
-        # Add command execution if enabled
-        if self.allow_command_execution:
-            capabilities_info += """You can execute terminal commands by including them in your response like this:
-```shell
-ls -la
-```
-
-The command will be executed, and the results will be shown to you for analysis.
-"""
-        
-        # Add web search if enabled
-        if self.allow_web_search:
-            capabilities_info += """You can search the web for information by including a search query like this:
-```search
-latest advances in artificial intelligence
-```
-
-The search results will be shown to you for analysis.
-"""
-        
-        # Add file operations if enabled
-        if self.allow_file_operations:
-            capabilities_info += """You can read and write files by including file operations like this:
-```file-read
-path/to/file.txt
-```
-
-```file-write
-path/to/new_file.txt
-Content to write to the file
-```
-
-The file operations will be performed, and the results will be shown to you for analysis.
-"""
-        
-        # Add data analysis if enabled
-        if self.allow_data_analysis:
-            capabilities_info += """You can analyze data using pandas by including data analysis code like this:
-```data-analysis
-import pandas as pd
-df = pd.read_csv('data.csv')
-print(df.describe())
-```
-
-The data analysis will be performed, and the results will be shown to you for analysis.
-"""
-        
-        if not self.tools:
-            capabilities_info = "\n\n## AVAILABLE TOOLS\nNo external tools are available for this step. You must rely on your internal knowledge to complete it."
-        
-        system_prompt = f"""You are an expert research assistant executing a specific step in a research plan. Your job is to execute this step thoroughly and document your findings and learnings.
+        system_prompt = f"""You are an expert research assistant executing a specific step in a research plan. Your goal is to execute this step thoroughly and document your findings and learnings.
 
 ## RESEARCH PLAN OVERVIEW
 Title: {research_plan.title}
@@ -482,25 +415,294 @@ Step ID: {step.id}
 Title: {step.title}
 Goal: {step.goal}
 Description: {step.description}
-Expected Output: {step.expected_output}{dependency_info}{context_info}{capabilities_info}
+Expected Output: {step.expected_output}{dependency_info}{context_info}
 
 Execute this research step thoroughly. Think step-by-step about how to achieve the goal using the available tools.
-
 First, analyze what needs to be done to complete this step successfully.
 Then, use the available tools to gather information, perform calculations, or conduct other necessary operations.
 Finally, summarize your findings and key learnings from this step.
 
-Your response must include these sections:
-1. Findings: Detailed results and discoveries from this step
-2. Learning: Key insights or knowledge gained
-3. Success: Whether the step was successful (yes/no)
-4. Next Steps: Suggestions for what to do next
+You MUST respond in a structured JSON format with these fields:
+1. "findings": Detailed results and discoveries from this step
+2. "learning": Key insights or knowledge gained
+3. "success": Whether the step was successful (boolean)
+4. "next_steps": Array of suggestions for what to do next
 
-When using tools, remember that I can see the results of each tool execution, so you can use that information to guide your research.
+When you need to use a tool, FIRST return the JSON with your current thinking, THEN indicate which tool you want to use.
+You'll receive tool results that you can use to update your findings.
 """
-        
+
         return system_prompt
+
+    def _get_tool_definitions(self) -> List[Dict[str, Any]]:
+        """
+        Get the tool definitions for OpenRouter tool calling.
+        
+        Returns:
+            List of tool definitions in the OpenRouter format
+        """
+        tools = []
+        
+        # Python code execution tool
+        if self.allow_code_execution:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "python_execution",
+                    "description": "Execute Python code and return the result",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "Python code to execute"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Brief description of what the code does"
+                            }
+                        },
+                        "required": ["code"]
+                    }
+                }
+            })
+        
+        # Terminal command execution tool
+        if self.allow_command_execution:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "terminal_command",
+                    "description": "Execute a terminal command and return the result",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string", 
+                                "description": "Terminal command to execute"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Brief description of what the command does"
+                            }
+                        },
+                        "required": ["command"]
+                    }
+                }
+            })
+        
+        # Web search tool
+        if self.allow_web_search:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web for information",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            })
+        
+        # File operations tool
+        if self.allow_file_operations:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "file_operation",
+                    "description": "Read or write a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "operation": {
+                                "type": "string",
+                                "enum": ["read", "write"],
+                                "description": "Operation to perform"
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the file"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Content to write (only for write operation)"
+                            }
+                        },
+                        "required": ["operation", "path"]
+                    }
+                }
+            })
+        
+        # Data analysis tool
+        if self.allow_data_analysis:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "data_analysis",
+                    "description": "Analyze data using pandas",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "Python code using pandas for data analysis"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Brief description of the analysis"
+                            }
+                        },
+                        "required": ["code"]
+                    }
+                }
+            })
+        
+        return tools
     
+    async def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute a tool based on the name and arguments.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            tool_args: Arguments for the tool
+            
+        Returns:
+            Tool execution result
+        """
+        print(f"\n--- Executing tool: {tool_name} ---")
+        print(f"Arguments: {json.dumps(tool_args, indent=2)}")
+        
+        if tool_name == "python_execution" and self.allow_code_execution:
+            code = tool_args.get("code", "")
+            description = tool_args.get("description", "")
+            
+            # Execute Python code
+            result = self.execute_python_code(code)
+            
+            # Record execution
+            execution_record = {
+                "code": code,
+                "output": result.output,
+                "success": result.success,
+                "error": result.error,
+                "description": description
+            }
+            
+            # Print output
+            print(f"\n--- Python output ---")
+            print(result.output if result.success else f"ERROR: {result.error}")
+            
+            return {
+                "success": result.success,
+                "output": result.output if result.success else "",
+                "error": result.error if not result.success else None
+            }
+            
+        elif tool_name == "terminal_command" and self.allow_command_execution:
+            command = tool_args.get("command", "")
+            description = tool_args.get("description", "")
+            
+            # Execute command
+            result = self.execute_command(command)
+            
+            # Print output
+            print(f"\n--- Command output (exit code: {result.exit_code}) ---")
+            print(f"STDOUT: {result.stdout}")
+            if result.stderr:
+                print(f"STDERR: {result.stderr}")
+            
+            return {
+                "success": result.success,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.exit_code
+            }
+            
+        elif tool_name == "web_search" and self.allow_web_search:
+            query = tool_args.get("query", "")
+            
+            # Simulate web search for now
+            print(f"\n--- Web search query: {query} ---")
+            search_result = f"[Simulated web search results for: {query}]"
+            
+            # Print output
+            print(f"\n--- Search results ---")
+            print(search_result)
+            
+            return {
+                "success": True,
+                "results": search_result
+            }
+            
+        elif tool_name == "file_operation" and self.allow_file_operations:
+            operation = tool_args.get("operation", "")
+            path = tool_args.get("path", "")
+            content = tool_args.get("content", "")
+            
+            # Simulate file operation for now
+            print(f"\n--- File operation: {operation} on {path} ---")
+            
+            if operation == "read":
+                try:
+                    with open(path, 'r') as f:
+                        file_content = f.read()
+                    return {
+                        "success": True,
+                        "content": file_content
+                    }
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "error": str(e)
+                    }
+            elif operation == "write":
+                try:
+                    with open(path, 'w') as f:
+                        f.write(content)
+                    return {
+                        "success": True
+                    }
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "error": str(e)
+                    }
+            
+            return {
+                "success": False,
+                "error": f"Invalid operation: {operation}"
+            }
+            
+        elif tool_name == "data_analysis" and self.allow_data_analysis:
+            code = tool_args.get("code", "")
+            description = tool_args.get("description", "")
+            
+            # Execute Python code (same as python_execution but focused on data)
+            result = self.execute_python_code(code)
+            
+            # Print output
+            print(f"\n--- Data analysis output ---")
+            print(result.output if result.success else f"ERROR: {result.error}")
+            
+            return {
+                "success": result.success,
+                "output": result.output if result.success else "",
+                "error": result.error if not result.success else None
+            }
+        
+        return {
+            "success": False,
+            "error": f"Tool not available or not allowed: {tool_name}"
+        }
+
     async def execute_step_async(
         self,
         step: ResearchStep,
@@ -537,12 +739,18 @@ When using tools, remember that I can see the results of each tool execution, so
         tokens = max_tokens if max_tokens is not None else self.max_tokens
         
         # Create prompt for the step execution
-        prompt = self._create_step_execution_prompt(
+        system_prompt = self._create_step_execution_prompt(
             step=step,
             research_plan=research_plan,
             previous_results=previous_results,
             additional_context=additional_context
         )
+        
+        # Create task prompt
+        user_prompt = f"Execute research step {step.id}: {step.title}"
+        
+        # Get tool definitions
+        tools = self._get_tool_definitions()
         
         # Initialize execution records
         code_executions = []
@@ -575,7 +783,7 @@ When using tools, remember that I can see the results of each tool execution, so
                     task_id=task_id_for_logs,
                     context={
                         "step_goal": step.goal,
-                        "prompt_length": len(prompt),
+                        "prompt_length": len(system_prompt),
                         "available_tools": self.tools
                     }
                 )
@@ -584,205 +792,153 @@ When using tools, remember that I can see the results of each tool execution, so
             print(f"\n==== EXECUTING STEP: {step.id} - {step.title} ====")
             print(f"Goal: {step.goal}")
             print(f"Available tools: {self.tools}")
-                
-            # Call LLM to execute the step
-            response = await self._service.async_chat(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model_name,  # Use model name instead of service object
-                temperature=temp,
-                max_tokens=tokens,
-                **kwargs
-            )
             
-            # Parse the response
-            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            # Create messages array
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
             
-            if not content:
-                raise ValueError("Empty response from LLM")
+            # Continue conversation until step is complete or max iterations reached
+            max_iterations = 5
+            current_iteration = 0
+            final_result = None
             
-            # Extract execution commands
-            code_blocks = self._extract_code_blocks(content)
-            
-            # Execute any Python code or shell commands in the response
-            for block in code_blocks:
-                block_type = block["type"].lower()
-                code = block["code"]
-                description = block.get("description", "")
+            while current_iteration < max_iterations:
+                current_iteration += 1
+                print(f"\n--- Interaction {current_iteration}/{max_iterations} ---")
                 
-                # Python code execution
-                if block_type in ["python", "py"] and self.allow_code_execution:
-                    print(f"\n--- Executing Python code ---")
-                    print(f"{code}")
-                    result = self.execute_python_code(code)
-                    
-                    # Record execution
-                    execution_record = {
-                        "code": code,
-                        "output": result.output,
-                        "success": result.success,
-                        "error": result.error,
-                        "description": description
-                    }
-                    code_executions.append(execution_record)
-                    
-                    # Update content with execution result if sharing is enabled
-                    if self.share_output_with_llm:
-                        content += f"\n\nCode Execution Result:\n```\n{result.output if result.success else result.error}\n```\n"
-                    
-                    # Print output
-                    print(f"\n--- Python output ---")
-                    print(result.output if result.success else f"ERROR: {result.error}")
-                
-                # Terminal command execution  
-                elif block_type in ["bash", "shell", "sh", "command"] and self.allow_command_execution:
-                    print(f"\n--- Executing terminal command ---")
-                    print(f"{code}")
-                    result = self.execute_command(code)
-                    
-                    # Record execution
-                    execution_record = {
-                        "command": code,
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "exit_code": result.exit_code,
-                        "success": result.success,
-                        "description": description
-                    }
-                    command_executions.append(execution_record)
-                    
-                    # Update content with execution result if sharing is enabled
-                    if self.share_output_with_llm:
-                        content += f"\n\nCommand Execution Result:\n```\nExit Code: {result.exit_code}\nStdout: {result.stdout}\nStderr: {result.stderr}\n```\n"
-                    
-                    # Print output
-                    print(f"\n--- Command output (exit code: {result.exit_code}) ---")
-                    print(f"STDOUT: {result.stdout}")
-                    if result.stderr:
-                        print(f"STDERR: {result.stderr}")
-                
-                # Web search execution
-                elif block_type in ["search", "web", "web_search"] and self.allow_web_search:
-                    print(f"\n--- Executing web search ---")
-                    print(f"Query: {code}")
-                    # Implement web search here
-                    search_result = f"[Simulated web search results for: {code}]"
-                    
-                    # Record search
-                    search_record = {
-                        "query": code,
-                        "results": search_result,
-                        "description": description
-                    }
-                    web_search_results.append(search_record)
-                    
-                    # Update content with search result if sharing is enabled
-                    if self.share_output_with_llm:
-                        content += f"\n\nWeb Search Result:\n```\n{search_result}\n```\n"
-                    
-                    # Print output
-                    print(f"\n--- Search results ---")
-                    print(search_result)
-                
-                # File operations
-                elif block_type in ["file-read", "file-write"] and self.allow_file_operations:
-                    print(f"\n--- Executing file operation: {block_type} ---")
-                    # Implement file operations here
-                    file_op_result = f"[Simulated file operation: {block_type} - {code}]"
-                    
-                    # Record file operation
-                    file_op_record = {
-                        "operation": block_type,
-                        "target": code,
-                        "result": file_op_result,
-                        "description": description
-                    }
-                    file_operations.append(file_op_record)
-                    
-                    # Update content with file operation result if sharing is enabled
-                    if self.share_output_with_llm:
-                        content += f"\n\nFile Operation Result:\n```\n{file_op_result}\n```\n"
-                    
-                    # Print output
-                    print(f"\n--- File operation result ---")
-                    print(file_op_result)
-                
-                # Data analysis
-                elif block_type in ["data-analysis", "data"] and self.allow_data_analysis:
-                    print(f"\n--- Executing data analysis ---")
-                    print(f"{code}")
-                    # Use Python execution for data analysis
-                    result = self.execute_python_code(code)
-                    
-                    # Record data analysis
-                    analysis_record = {
-                        "code": code,
-                        "output": result.output,
-                        "success": result.success,
-                        "error": result.error,
-                        "description": description
-                    }
-                    data_analysis_results.append(analysis_record)
-                    
-                    # Update content with data analysis result if sharing is enabled
-                    if self.share_output_with_llm:
-                        content += f"\n\nData Analysis Result:\n```\n{result.output if result.success else result.error}\n```\n"
-                    
-                    # Print output
-                    print(f"\n--- Data analysis output ---")
-                    print(result.output if result.success else f"ERROR: {result.error}")
-            
-            # After executing commands, ask LLM to interpret results if there were executions
-            execution_happened = (
-                code_executions or 
-                command_executions or 
-                web_search_results or 
-                file_operations or 
-                data_analysis_results
-            )
-            
-            if execution_happened and self.share_output_with_llm:
-                # Create a prompt with the original response and execution results
-                interpretation_prompt = (
-                    "Based on the step execution and the results of the tool executions, "
-                    "what are your findings and learnings from this step? Please provide:\n\n"
-                    "1. Findings: Concrete results or insights\n"
-                    "2. Learning: What we learned\n"
-                    "3. Success: Whether the step was successful (yes/no)\n"
-                    "4. Next Steps: Suggestions for what to do next"
-                )
-                
-                print(f"\n--- Asking LLM to interpret results ---")
-                
-                # Call LLM again to interpret results
-                interpretation_response = await self._service.async_chat(
-                    messages=[
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": content},
-                        {"role": "user", "content": interpretation_prompt}
-                    ],
-                    model=self.model_name,  # Use model name instead of service object
+                # Call LLM to execute the step
+                response = await self._service.generate_chat_response(
+                    messages=messages,
+                    model=self.model_name,
                     temperature=temp,
                     max_tokens=tokens,
+                    tools=tools if tools else None,
                     **kwargs
                 )
                 
-                # Update content with interpretation
-                interpretation_content = interpretation_response.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if interpretation_content:
-                    content += f"\n\n{interpretation_content}"
+                # Extract assistant's response
+                assistant_message = None
+                if "choices" in response and len(response["choices"]) > 0:
+                    assistant_message = response["choices"][0]["message"]
+                
+                if not assistant_message:
+                    raise ValueError("Empty response from LLM")
+                
+                # Add assistant's message to conversation
+                messages.append(assistant_message)
+                
+                # Check if the assistant wants to use a tool
+                tool_calls = assistant_message.get("tool_calls", [])
+                
+                if not tool_calls:
+                    # No tool calls, this is the final response
+                    final_result = assistant_message
+                    break
+                
+                # Process tool calls
+                for tool_call in tool_calls:
+                    # Extract tool call information
+                    if tool_call.get("type") == "function":
+                        function_call = tool_call.get("function", {})
+                        tool_name = function_call.get("name")
+                        tool_args_str = function_call.get("arguments", "{}")
+                        tool_args = json.loads(tool_args_str)
+                        
+                        # Execute the tool
+                        tool_result = await self._execute_tool(tool_name, tool_args)
+                        
+                        # Record tool execution based on tool type
+                        if tool_name == "python_execution":
+                            code_executions.append({
+                                "code": tool_args.get("code", ""),
+                                "output": tool_result.get("output", ""),
+                                "success": tool_result.get("success", False),
+                                "error": tool_result.get("error"),
+                                "description": tool_args.get("description", "")
+                            })
+                        elif tool_name == "terminal_command":
+                            command_executions.append({
+                                "command": tool_args.get("command", ""),
+                                "stdout": tool_result.get("stdout", ""),
+                                "stderr": tool_result.get("stderr", ""),
+                                "exit_code": tool_result.get("exit_code", 1),
+                                "success": tool_result.get("success", False),
+                                "description": tool_args.get("description", "")
+                            })
+                        elif tool_name == "web_search":
+                            web_search_results.append({
+                                "query": tool_args.get("query", ""),
+                                "results": tool_result.get("results", "")
+                            })
+                        elif tool_name == "file_operation":
+                            file_operations.append({
+                                "operation": tool_args.get("operation", ""),
+                                "path": tool_args.get("path", ""),
+                                "success": tool_result.get("success", False),
+                                "error": tool_result.get("error")
+                            })
+                        elif tool_name == "data_analysis":
+                            data_analysis_results.append({
+                                "code": tool_args.get("code", ""),
+                                "output": tool_result.get("output", ""),
+                                "success": tool_result.get("success", False),
+                                "error": tool_result.get("error"),
+                                "description": tool_args.get("description", "")
+                            })
+                        
+                        # Add tool result to messages
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.get("id"),
+                            "name": tool_name,
+                            "content": json.dumps(tool_result)
+                        })
             
-            # Process the complete response
-            result = self._parse_step_result(content, step.id)
+            # If we didn't get a final result, use the last message
+            if not final_result and messages:
+                for message in reversed(messages):
+                    if message.get("role") == "assistant":
+                        final_result = message
+                        break
+            
+            if not final_result:
+                raise ValueError("No final result from LLM")
+            
+            # Extract the content from the final result
+            content = final_result.get("content", "")
+            
+            # Try to parse JSON from content
+            try:
+                # Check if it's already a JSON object
+                if isinstance(content, dict):
+                    result_data = content
+                else:
+                    # Try to extract JSON from the text
+                    json_match = None
+                    if "```json" in content:
+                        parts = content.split("```json")
+                        if len(parts) > 1:
+                            json_block = parts[1].split("```")[0].strip()
+                            json_match = json.loads(json_block)
+                    elif content.strip().startswith("{") and content.strip().endswith("}"):
+                        json_match = json.loads(content)
+                    
+                    if json_match:
+                        result_data = json_match
+                    else:
+                        # Fall back to parsing with our text extraction method
+                        result_data = self._parse_step_result(content, step.id)
+            except Exception as e:
+                print(f"Error parsing JSON from content: {str(e)}")
+                result_data = self._parse_step_result(content, step.id)
             
             # Update the step result
-            step_result.success = result.get("success", False)
-            step_result.findings = result.get("findings", "")
-            step_result.learning = result.get("learning", "")
-            step_result.next_steps = result.get("next_steps", [])
-            
-            # Add executions to the result
-            step_result.code_executions = code_executions
-            step_result.command_executions = command_executions
+            step_result.success = result_data.get("success", False)
+            step_result.findings = result_data.get("findings", "")
+            step_result.learning = result_data.get("learning", "")
+            step_result.next_steps = result_data.get("next_steps", [])
             
             # Print the results
             print(f"\n==== STEP EXECUTION RESULTS ====")
