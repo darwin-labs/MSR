@@ -68,7 +68,7 @@ async def run_agent(
     allowed_tools = set()
     
     if enable_python:
-        allowed_tools.add(ToolType.PYTHON_EXECUTION)
+        allowed_tools.add(ToolType.PYTHON_CODE)
         print("🐍 Enabled Python code execution")
         
     if enable_terminal:
@@ -80,7 +80,8 @@ async def run_agent(
         print("🔍 Enabled web search")
         
     if enable_file_operations:
-        allowed_tools.add(ToolType.FILE_OPERATIONS)
+        allowed_tools.add(ToolType.FILE_READ)
+        allowed_tools.add(ToolType.FILE_WRITE)
         print("📂 Enabled file operations")
         
     if enable_data_analysis:
