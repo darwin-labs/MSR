@@ -834,13 +834,23 @@ You'll receive tool results that you can use to update your findings.
                     **execution_params
                 )
                 
-                # Extract assistant's response
+                # Print the raw response for debugging
+                print("\n--- RAW LLM RESPONSE ---")
+                print(json.dumps(response, indent=2, default=str))
+                print("------------------------")
+                
+                # Extract assistant's message
                 assistant_message = None
                 if "choices" in response and len(response["choices"]) > 0:
                     assistant_message = response["choices"][0]["message"]
                 
                 if not assistant_message:
                     raise ValueError("Empty response from LLM")
+                
+                # Print assistant's message for debugging
+                print("\n--- ASSISTANT MESSAGE ---")
+                print(json.dumps(assistant_message, indent=2, default=str))
+                print("--------------------------")
                 
                 # Add assistant's message to conversation
                 messages.append(assistant_message)
@@ -862,8 +872,17 @@ You'll receive tool results that you can use to update your findings.
                         tool_args_str = function_call.get("arguments", "{}")
                         tool_args = json.loads(tool_args_str)
                         
+                        # Print tool call for debugging
+                        print(f"\n--- TOOL CALL: {tool_name} ---")
+                        print(f"Arguments: {json.dumps(tool_args, indent=2)}")
+                        
                         # Execute the tool
                         tool_result = await self._execute_tool(tool_name, tool_args)
+                        
+                        # Print tool result for debugging
+                        print(f"\n--- TOOL RESULT ---")
+                        print(json.dumps(tool_result, indent=2))
+                        print("-------------------")
                         
                         # Record tool execution based on tool type
                         if tool_name == "python_execution":
@@ -925,6 +944,11 @@ You'll receive tool results that you can use to update your findings.
             # Extract the content from the final result
             content = final_result.get("content", "")
             
+            # Print final content for debugging
+            print("\n--- FINAL CONTENT ---")
+            print(content)
+            print("---------------------")
+            
             # Try to parse JSON from content
             try:
                 # Check if it's already a JSON object
@@ -938,17 +962,28 @@ You'll receive tool results that you can use to update your findings.
                         if len(parts) > 1:
                             json_block = parts[1].split("```")[0].strip()
                             json_match = json.loads(json_block)
+                            print("\n--- JSON BLOCK EXTRACTED FROM ```json CODE BLOCK ---")
+                            print(json_block)
                     elif content.strip().startswith("{") and content.strip().endswith("}"):
                         json_match = json.loads(content)
+                        print("\n--- JSON PARSED FROM RAW CONTENT ---")
+                        print(content)
                     
                     if json_match:
                         result_data = json_match
+                        print("\n--- PARSED JSON RESULT ---")
+                        print(json.dumps(result_data, indent=2))
                     else:
                         # Fall back to parsing with our text extraction method
                         result_data = self._parse_step_result(content, step.id)
+                        print("\n--- TEXT PARSED RESULT ---")
+                        print(json.dumps(result_data, indent=2))
             except Exception as e:
-                print(f"Error parsing JSON from content: {str(e)}")
+                print(f"\n--- JSON PARSING ERROR ---")
+                print(f"Error: {str(e)}")
                 result_data = self._parse_step_result(content, step.id)
+                print("\n--- FALLBACK TEXT PARSED RESULT ---")
+                print(json.dumps(result_data, indent=2))
             
             # Update the step result
             step_result.success = result_data.get("success", False)
