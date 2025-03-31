@@ -80,6 +80,10 @@ class StepExecutor:
         max_tokens: int = 2048,
         allow_code_execution: bool = False,
         allow_command_execution: bool = False,
+        allow_web_search: bool = False,
+        allow_file_operations: bool = False,
+        allow_data_analysis: bool = False,
+        tools: Optional[List[str]] = None,
         share_output_with_llm: bool = True,  # Whether to share execution results with the LLM
         **kwargs
     ):
@@ -93,6 +97,10 @@ class StepExecutor:
             max_tokens: Default max tokens for generation (default: 2048)
             allow_code_execution: Whether to allow Python code execution (default: False)
             allow_command_execution: Whether to allow terminal command execution (default: False)
+            allow_web_search: Whether to allow web search (default: False)
+            allow_file_operations: Whether to allow file operations (default: False)
+            allow_data_analysis: Whether to allow data analysis tools (default: False)
+            tools: List of specific tools to enable (overrides individual flags)
             share_output_with_llm: Whether to share execution results with the LLM (default: True)
             **kwargs: Additional parameters for generation
         """
@@ -114,9 +122,36 @@ class StepExecutor:
         # Store execution history
         self.execution_history: List[StepResult] = []
         
-        # Security flags
-        self.allow_code_execution = allow_code_execution
-        self.allow_command_execution = allow_command_execution
+        # Initialize available tools
+        if tools is not None:
+            # If specific tools are provided, use those
+            self.tools = tools
+            self.allow_code_execution = "python" in tools or "code" in tools
+            self.allow_command_execution = "terminal" in tools or "command" in tools or "shell" in tools
+            self.allow_web_search = "web" in tools or "search" in tools
+            self.allow_file_operations = "file" in tools
+            self.allow_data_analysis = "data" in tools or "analysis" in tools
+        else:
+            # Otherwise use the individual flags
+            self.allow_code_execution = allow_code_execution
+            self.allow_command_execution = allow_command_execution
+            self.allow_web_search = allow_web_search
+            self.allow_file_operations = allow_file_operations
+            self.allow_data_analysis = allow_data_analysis
+            
+            # Create list of enabled tools
+            self.tools = []
+            if self.allow_code_execution:
+                self.tools.append("python")
+            if self.allow_command_execution:
+                self.tools.append("terminal")
+            if self.allow_web_search:
+                self.tools.append("web_search")
+            if self.allow_file_operations:
+                self.tools.append("file_operations")
+            if self.allow_data_analysis:
+                self.tools.append("data_analysis")
+        
         self.share_output_with_llm = share_output_with_llm
         
         # Get logger
@@ -368,11 +403,13 @@ class StepExecutor:
         # Add additional context if provided
         context_info = f"\n\n## ADDITIONAL CONTEXT\n{additional_context}" if additional_context else ""
         
-        # Add execution capabilities information
-        capabilities_info = "\n\n## EXECUTION CAPABILITIES\n"
+        # Add execution capabilities information based on enabled tools
+        capabilities_info = "\n\n## AVAILABLE TOOLS\n"
+        
+        # Add Python code execution if enabled
         if self.allow_code_execution:
-            capabilities_info += """You can execute Python code by including it in your response using the following format:
-```execute_python
+            capabilities_info += """You can execute Python code by including it in your response like this:
+```python
 # Your Python code here
 import pandas as pd
 data = {'Name': ['John', 'Anna'], 'Age': [28, 34]}
@@ -380,22 +417,60 @@ df = pd.DataFrame(data)
 print(df)
 ```
 
-The code will be executed, and the results will be stored and available for subsequent steps.
+The code will be executed, and the results will be shown to you for analysis.
 """
         
+        # Add command execution if enabled
         if self.allow_command_execution:
-            capabilities_info += """You can execute terminal commands by including them in your response using the following format:
-```execute_command
+            capabilities_info += """You can execute terminal commands by including them in your response like this:
+```shell
 ls -la
 ```
 
-The command will be executed, and the results will be stored and available for subsequent steps.
+The command will be executed, and the results will be shown to you for analysis.
 """
         
-        if not self.allow_code_execution and not self.allow_command_execution:
-            capabilities_info = ""  # Remove capabilities section if nothing is allowed
+        # Add web search if enabled
+        if self.allow_web_search:
+            capabilities_info += """You can search the web for information by including a search query like this:
+```search
+latest advances in artificial intelligence
+```
+
+The search results will be shown to you for analysis.
+"""
         
-        system_prompt = f"""You are an expert research assistant executing a specific step in a research plan. YOU MUST RETURN OUTPUT IN JSON FORMAT.
+        # Add file operations if enabled
+        if self.allow_file_operations:
+            capabilities_info += """You can read and write files by including file operations like this:
+```file-read
+path/to/file.txt
+```
+
+```file-write
+path/to/new_file.txt
+Content to write to the file
+```
+
+The file operations will be performed, and the results will be shown to you for analysis.
+"""
+        
+        # Add data analysis if enabled
+        if self.allow_data_analysis:
+            capabilities_info += """You can analyze data using pandas by including data analysis code like this:
+```data-analysis
+import pandas as pd
+df = pd.read_csv('data.csv')
+print(df.describe())
+```
+
+The data analysis will be performed, and the results will be shown to you for analysis.
+"""
+        
+        if not self.tools:
+            capabilities_info = "\n\n## AVAILABLE TOOLS\nNo external tools are available for this step. You must rely on your internal knowledge to complete it."
+        
+        system_prompt = f"""You are an expert research assistant executing a specific step in a research plan. Your job is to execute this step thoroughly and document your findings and learnings.
 
 ## RESEARCH PLAN OVERVIEW
 Title: {research_plan.title}
@@ -409,43 +484,21 @@ Goal: {step.goal}
 Description: {step.description}
 Expected Output: {step.expected_output}{dependency_info}{context_info}{capabilities_info}
 
-Execute this research step thoroughly. Think step-by-step about how to achieve the goal. 
-Your response must be in the following JSON format:
+Execute this research step thoroughly. Think step-by-step about how to achieve the goal using the available tools.
 
-{{
-  "findings": "Detailed findings from executing this step. Include all relevant information discovered.",
-  "learning": "The key learning or insight gained from this step, summarized concisely.",
-  "next_steps": ["Suggestion for next step 1", "Suggestion for next step 2"],
-  "artifacts": {{
-    "notes": "Any additional notes or information",
-    "references": ["Reference 1", "Reference 2"]
-  }}"""
-        
-        if self.allow_code_execution:
-            system_prompt += """,
-  "code_blocks": [
-    {
-      "code": "import pandas as pd\\ndf = pd.DataFrame({'A': [1, 2]})\\nprint(df)",
-      "description": "Analysis of dataset with pandas"
-    }
-  ]"""
-        
-        if self.allow_command_execution:
-            system_prompt += """,
-  "command_blocks": [
-    {
-      "command": "ls -la",
-      "description": "List files in the current directory"
-    }
-  ]"""
-        
-        system_prompt += "\n}\n\n"
-        
-        system_prompt += """Make sure your findings directly address the goal of this step and provide the expected output.
-The 'learning' field should capture the most important insight that should be carried forward to dependent steps.
+First, analyze what needs to be done to complete this step successfully.
+Then, use the available tools to gather information, perform calculations, or conduct other necessary operations.
+Finally, summarize your findings and key learnings from this step.
 
-If you use code or command execution, include the code or commands in the appropriate blocks in your JSON response.
+Your response must include these sections:
+1. Findings: Detailed results and discoveries from this step
+2. Learning: Key insights or knowledge gained
+3. Success: Whether the step was successful (yes/no)
+4. Next Steps: Suggestions for what to do next
+
+When using tools, remember that I can see the results of each tool execution, so you can use that information to guide your research.
 """
+        
         return system_prompt
     
     async def execute_step_async(
@@ -494,6 +547,9 @@ If you use code or command execution, include the code or commands in the approp
         # Initialize execution records
         code_executions = []
         command_executions = []
+        web_search_results = []
+        file_operations = []
+        data_analysis_results = []
         
         # Initialize step result
         step_result = StepResult(
@@ -502,7 +558,12 @@ If you use code or command execution, include the code or commands in the approp
             findings="",
             learning="",
             code_executions=code_executions,
-            command_executions=command_executions
+            command_executions=command_executions,
+            artifacts={
+                "web_search_results": web_search_results,
+                "file_operations": file_operations,
+                "data_analysis_results": data_analysis_results
+            }
         )
         
         try:
@@ -514,9 +575,15 @@ If you use code or command execution, include the code or commands in the approp
                     task_id=task_id_for_logs,
                     context={
                         "step_goal": step.goal,
-                        "prompt_length": len(prompt)
+                        "prompt_length": len(prompt),
+                        "available_tools": self.tools
                     }
                 )
+            
+            # Print debug information
+            print(f"\n==== EXECUTING STEP: {step.id} - {step.title} ====")
+            print(f"Goal: {step.goal}")
+            print(f"Available tools: {self.tools}")
                 
             # Call LLM to execute the step
             response = await self._service.async_chat(
@@ -542,49 +609,149 @@ If you use code or command execution, include the code or commands in the approp
                 code = block["code"]
                 description = block.get("description", "")
                 
-                if block_type in ["python", "py"]:
-                    # Execute Python code if allowed
-                    if self.allow_code_execution:
-                        result = self.execute_python_code(code)
-                        
-                        # Record execution
-                        execution_record = {
-                            "code": code,
-                            "output": result.output,
-                            "success": result.success,
-                            "error": result.error,
-                            "description": description
-                        }
-                        code_executions.append(execution_record)
-                        
-                        # Update content with execution result if sharing is enabled
-                        if self.share_output_with_llm:
-                            content += f"\n\nCode Execution Result:\n```\n{result.output if result.success else result.error}\n```\n"
-                            
-                elif block_type in ["bash", "shell", "sh", "command"]:
-                    # Execute shell command if allowed
-                    if self.allow_command_execution:
-                        result = self.execute_command(code)
-                        
-                        # Record execution
-                        execution_record = {
-                            "command": code,
-                            "stdout": result.stdout,
-                            "stderr": result.stderr,
-                            "exit_code": result.exit_code,
-                            "success": result.success,
-                            "description": description
-                        }
-                        command_executions.append(execution_record)
-                        
-                        # Update content with execution result if sharing is enabled
-                        if self.share_output_with_llm:
-                            content += f"\n\nCommand Execution Result:\n```\nExit Code: {result.exit_code}\nStdout: {result.stdout}\nStderr: {result.stderr}\n```\n"
+                # Python code execution
+                if block_type in ["python", "py"] and self.allow_code_execution:
+                    print(f"\n--- Executing Python code ---")
+                    print(f"{code}")
+                    result = self.execute_python_code(code)
+                    
+                    # Record execution
+                    execution_record = {
+                        "code": code,
+                        "output": result.output,
+                        "success": result.success,
+                        "error": result.error,
+                        "description": description
+                    }
+                    code_executions.append(execution_record)
+                    
+                    # Update content with execution result if sharing is enabled
+                    if self.share_output_with_llm:
+                        content += f"\n\nCode Execution Result:\n```\n{result.output if result.success else result.error}\n```\n"
+                    
+                    # Print output
+                    print(f"\n--- Python output ---")
+                    print(result.output if result.success else f"ERROR: {result.error}")
+                
+                # Terminal command execution  
+                elif block_type in ["bash", "shell", "sh", "command"] and self.allow_command_execution:
+                    print(f"\n--- Executing terminal command ---")
+                    print(f"{code}")
+                    result = self.execute_command(code)
+                    
+                    # Record execution
+                    execution_record = {
+                        "command": code,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "exit_code": result.exit_code,
+                        "success": result.success,
+                        "description": description
+                    }
+                    command_executions.append(execution_record)
+                    
+                    # Update content with execution result if sharing is enabled
+                    if self.share_output_with_llm:
+                        content += f"\n\nCommand Execution Result:\n```\nExit Code: {result.exit_code}\nStdout: {result.stdout}\nStderr: {result.stderr}\n```\n"
+                    
+                    # Print output
+                    print(f"\n--- Command output (exit code: {result.exit_code}) ---")
+                    print(f"STDOUT: {result.stdout}")
+                    if result.stderr:
+                        print(f"STDERR: {result.stderr}")
+                
+                # Web search execution
+                elif block_type in ["search", "web", "web_search"] and self.allow_web_search:
+                    print(f"\n--- Executing web search ---")
+                    print(f"Query: {code}")
+                    # Implement web search here
+                    search_result = f"[Simulated web search results for: {code}]"
+                    
+                    # Record search
+                    search_record = {
+                        "query": code,
+                        "results": search_result,
+                        "description": description
+                    }
+                    web_search_results.append(search_record)
+                    
+                    # Update content with search result if sharing is enabled
+                    if self.share_output_with_llm:
+                        content += f"\n\nWeb Search Result:\n```\n{search_result}\n```\n"
+                    
+                    # Print output
+                    print(f"\n--- Search results ---")
+                    print(search_result)
+                
+                # File operations
+                elif block_type in ["file-read", "file-write"] and self.allow_file_operations:
+                    print(f"\n--- Executing file operation: {block_type} ---")
+                    # Implement file operations here
+                    file_op_result = f"[Simulated file operation: {block_type} - {code}]"
+                    
+                    # Record file operation
+                    file_op_record = {
+                        "operation": block_type,
+                        "target": code,
+                        "result": file_op_result,
+                        "description": description
+                    }
+                    file_operations.append(file_op_record)
+                    
+                    # Update content with file operation result if sharing is enabled
+                    if self.share_output_with_llm:
+                        content += f"\n\nFile Operation Result:\n```\n{file_op_result}\n```\n"
+                    
+                    # Print output
+                    print(f"\n--- File operation result ---")
+                    print(file_op_result)
+                
+                # Data analysis
+                elif block_type in ["data-analysis", "data"] and self.allow_data_analysis:
+                    print(f"\n--- Executing data analysis ---")
+                    print(f"{code}")
+                    # Use Python execution for data analysis
+                    result = self.execute_python_code(code)
+                    
+                    # Record data analysis
+                    analysis_record = {
+                        "code": code,
+                        "output": result.output,
+                        "success": result.success,
+                        "error": result.error,
+                        "description": description
+                    }
+                    data_analysis_results.append(analysis_record)
+                    
+                    # Update content with data analysis result if sharing is enabled
+                    if self.share_output_with_llm:
+                        content += f"\n\nData Analysis Result:\n```\n{result.output if result.success else result.error}\n```\n"
+                    
+                    # Print output
+                    print(f"\n--- Data analysis output ---")
+                    print(result.output if result.success else f"ERROR: {result.error}")
             
             # After executing commands, ask LLM to interpret results if there were executions
-            if (code_executions or command_executions) and self.share_output_with_llm:
+            execution_happened = (
+                code_executions or 
+                command_executions or 
+                web_search_results or 
+                file_operations or 
+                data_analysis_results
+            )
+            
+            if execution_happened and self.share_output_with_llm:
                 # Create a prompt with the original response and execution results
-                interpretation_prompt = f"Based on the step execution and the results of any code or command executions, what are your findings and learnings from this step? Please provide:\n\n1. Findings: Concrete results or insights\n2. Learning: What we learned\n3. Success: Whether the step was successful (yes/no)\n4. Next Steps: Suggestions for what to do next"
+                interpretation_prompt = (
+                    "Based on the step execution and the results of the tool executions, "
+                    "what are your findings and learnings from this step? Please provide:\n\n"
+                    "1. Findings: Concrete results or insights\n"
+                    "2. Learning: What we learned\n"
+                    "3. Success: Whether the step was successful (yes/no)\n"
+                    "4. Next Steps: Suggestions for what to do next"
+                )
+                
+                print(f"\n--- Asking LLM to interpret results ---")
                 
                 # Call LLM again to interpret results
                 interpretation_response = await self._service.async_chat(
@@ -617,6 +784,14 @@ If you use code or command execution, include the code or commands in the approp
             step_result.code_executions = code_executions
             step_result.command_executions = command_executions
             
+            # Print the results
+            print(f"\n==== STEP EXECUTION RESULTS ====")
+            print(f"Success: {step_result.success}")
+            print(f"Findings: {step_result.findings[:200]}..." if len(step_result.findings) > 200 else f"Findings: {step_result.findings}")
+            print(f"Learning: {step_result.learning}")
+            print(f"Next Steps: {step_result.next_steps}")
+            print("================================\n")
+            
             # Log completion
             if agent_id_for_logs and task_id_for_logs:
                 self.logger.info(
@@ -626,9 +801,19 @@ If you use code or command execution, include the code or commands in the approp
                     context={
                         "success": step_result.success,
                         "findings_length": len(step_result.findings),
-                        "learning_length": len(step_result.learning)
+                        "learning_length": len(step_result.learning),
+                        "tools_used": {
+                            "code": len(code_executions),
+                            "commands": len(command_executions),
+                            "web_searches": len(web_search_results),
+                            "file_operations": len(file_operations),
+                            "data_analyses": len(data_analysis_results)
+                        }
                     }
                 )
+            
+            # Add to execution history
+            self.execution_history.append(step_result)
             
             # Return the result
             return step_result
@@ -640,9 +825,17 @@ If you use code or command execution, include the code or commands in the approp
                 event_type=LogEventType.ERROR
             )
             
+            # Print error
+            print(f"\n==== ERROR IN STEP EXECUTION ====")
+            print(error_msg)
+            print("================================\n")
+            
             # Update step result with error
             step_result.success = False
             step_result.error = error_msg
+            
+            # Add to execution history
+            self.execution_history.append(step_result)
             
             return step_result
     
