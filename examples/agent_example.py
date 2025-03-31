@@ -98,7 +98,8 @@ async def run_agent(
         allowed_tools=allowed_tools,
         model=model,
         temperature=temperature,
-        require_step_approval=approve_execution
+        require_step_approval=approve_execution,
+        save_state_path=output_file
     )
     
     # Configure planner
@@ -115,11 +116,11 @@ async def run_agent(
     # If output file is specified, save state to file
     if output_file:
         print(f"\n💾 Saving agent state to {output_file}")
-        agent.save_state(output_file)
+        agent.save_state()
     
     # Print completion message
     print("\n✅ Agent execution complete!")
-    print(f"📊 Statistics: {len([s for s in agent.executed_steps if s.success])}/{len(agent.executed_steps)} steps successful")
+    print(f"📊 Statistics: {len([s for s in agent.state.step_results if s.success])}/{len(agent.state.step_results)} steps successful")
     
     # Print where to find logs if log_file was specified
     if log_file:
