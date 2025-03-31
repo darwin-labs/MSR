@@ -41,7 +41,7 @@ class StepResult:
     step_id: str
     success: bool
     findings: str
-    learning: str
+    learning: str = ""
     next_steps: List[str] = field(default_factory=list)
     artifacts: Dict[str, Any] = field(default_factory=dict)
     code_executions: List[Dict[str, Any]] = field(default_factory=list)
@@ -50,11 +50,21 @@ class StepResult:
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert the step result to a dictionary."""
-        return asdict(self)
+        return {
+            "step_id": self.step_id,
+            "success": self.success,
+            "findings": self.findings,
+            "learning": self.learning,
+            "next_steps": self.next_steps,
+            "artifacts": self.artifacts,
+            "code_executions": self.code_executions,
+            "command_executions": self.command_executions,
+            "error": self.error
+        }
     
     def to_json(self) -> str:
         """Convert the step result to a JSON string."""
-        return json.dumps(asdict(self), indent=2)
+        return json.dumps(self.to_dict(), indent=2)
 
 
 class StepExecutor:
@@ -70,7 +80,6 @@ class StepExecutor:
         max_tokens: int = 2048,
         allow_code_execution: bool = False,
         allow_command_execution: bool = False,
-        share_output_with_llm: bool = True,  # Whether to share execution results with the LLM
         **kwargs
     ):
         """
@@ -83,7 +92,6 @@ class StepExecutor:
             max_tokens: Default max tokens for generation (default: 2048)
             allow_code_execution: Whether to allow Python code execution (default: False)
             allow_command_execution: Whether to allow terminal command execution (default: False)
-            share_output_with_llm: Whether to share execution results with the LLM (default: True)
             **kwargs: Additional parameters for generation
         """
         # Use Claude as default model for better reasoning
@@ -103,7 +111,6 @@ class StepExecutor:
         # Security flags
         self.allow_code_execution = allow_code_execution
         self.allow_command_execution = allow_command_execution
-        self.share_output_with_llm = share_output_with_llm
         
         # Get logger
         self.logger = get_logger()
@@ -366,11 +373,8 @@ df = pd.DataFrame(data)
 print(df)
 ```
 
+The code will be executed, and the results will be stored and available for subsequent steps.
 """
-            if self.share_output_with_llm:
-                capabilities_info += "The code will be executed, and the results will be shared back with you to analyze.\n"
-            else:
-                capabilities_info += "The code will be executed, but results will not be shared back with you.\n"
         
         if self.allow_command_execution:
             capabilities_info += """You can execute terminal commands by including them in your response using the following format:
@@ -378,11 +382,8 @@ print(df)
 ls -la
 ```
 
+The command will be executed, and the results will be stored and available for subsequent steps.
 """
-            if self.share_output_with_llm:
-                capabilities_info += "The command will be executed, and the results will be shared back with you to analyze.\n"
-            else:
-                capabilities_info += "The command will be executed, but results will not be shared back with you.\n"
         
         if not self.allow_code_execution and not self.allow_command_execution:
             capabilities_info = ""  # Remove capabilities section if nothing is allowed
@@ -566,8 +567,6 @@ If you use code or command execution, include the code or commands in the approp
                     # Execute any code blocks
                     code_execution_results = []
                     if self.allow_code_execution and "code_blocks" in result_data:
-                        all_code_outputs = []
-                        
                         for i, code_block in enumerate(result_data.get("code_blocks", [])):
                             code = code_block.get("code", "")
                             description = code_block.get("description", "")
@@ -588,56 +587,17 @@ If you use code or command execution, include the code or commands in the approp
                                 execution_result = self.execute_python_code(code)
                                 
                                 # Store execution result
-                                code_exec_result = {
+                                code_execution_results.append({
                                     "code": code,
                                     "description": description,
                                     "success": execution_result.success,
                                     "output": execution_result.output,
                                     "error": execution_result.error
-                                }
-                                code_execution_results.append(code_exec_result)
-                                
-                                # Add to outputs for sharing with LLM if enabled
-                                if self.share_output_with_llm:
-                                    output_info = f"Code block {i+1} ({description}) result:\n"
-                                    if execution_result.success:
-                                        output_info += f"```\n{execution_result.output}\n```"
-                                    else:
-                                        output_info += f"Error: {execution_result.error}"
-                                    all_code_outputs.append(output_info)
-                        
-                        # If sharing is enabled and we have outputs, send them to the LLM
-                        if self.share_output_with_llm and all_code_outputs:
-                            code_results_message = "\n\n".join(all_code_outputs)
-                            messages.append({"role": "user", "content": f"Here are the results of your code execution:\n\n{code_results_message}\n\nPlease analyze these results and continue with your findings."})
-                            
-                            # Make another API call with the updated messages and execution results
-                            updated_response = await self.service.generate_chat_response(
-                                messages=messages,
-                                **params
-                            )
-                            
-                            # Update response with the new content that includes analysis of code execution results
-                            if "choices" in updated_response and len(updated_response["choices"]) > 0:
-                                response = updated_response
-                                content = response["choices"][0]["message"]["content"]
-                                
-                                # Reparse the JSON from the updated response
-                                if "```json" in content:
-                                    json_content = content.split("```json")[1].split("```")[0].strip()
-                                elif "```" in content:
-                                    json_content = content.split("```")[1].strip()
-                                else:
-                                    json_content = content
-                                
-                                # Parse the updated JSON
-                                result_data = json.loads(json_content)
+                                })
                     
                     # Execute any command blocks
                     command_execution_results = []
                     if self.allow_command_execution and "command_blocks" in result_data:
-                        all_command_outputs = []
-                        
                         for i, command_block in enumerate(result_data.get("command_blocks", [])):
                             command = command_block.get("command", "")
                             description = command_block.get("description", "")
@@ -658,53 +618,14 @@ If you use code or command execution, include the code or commands in the approp
                                 execution_result = self.execute_command(command)
                                 
                                 # Store execution result
-                                command_exec_result = {
+                                command_execution_results.append({
                                     "command": command,
                                     "description": description,
                                     "success": execution_result.success,
                                     "stdout": execution_result.stdout,
                                     "stderr": execution_result.stderr,
                                     "exit_code": execution_result.exit_code
-                                }
-                                command_execution_results.append(command_exec_result)
-                                
-                                # Add to outputs for sharing with LLM if enabled
-                                if self.share_output_with_llm:
-                                    output_info = f"Command {i+1} ({description}) result:\n"
-                                    output_info += f"Command: {command}\n"
-                                    output_info += f"Exit code: {execution_result.exit_code}\n"
-                                    if execution_result.stdout:
-                                        output_info += f"Output:\n```\n{execution_result.stdout}\n```\n"
-                                    if execution_result.stderr:
-                                        output_info += f"Error:\n```\n{execution_result.stderr}\n```"
-                                    all_command_outputs.append(output_info)
-                        
-                        # If sharing is enabled and we have outputs, send them to the LLM
-                        if self.share_output_with_llm and all_command_outputs:
-                            command_results_message = "\n\n".join(all_command_outputs)
-                            messages.append({"role": "user", "content": f"Here are the results of your command execution:\n\n{command_results_message}\n\nPlease analyze these results and continue with your findings."})
-                            
-                            # Make another API call with the updated messages and execution results
-                            updated_response = await self.service.generate_chat_response(
-                                messages=messages,
-                                **params
-                            )
-                            
-                            # Update response with the new content that includes analysis of command execution results
-                            if "choices" in updated_response and len(updated_response["choices"]) > 0:
-                                response = updated_response
-                                content = response["choices"][0]["message"]["content"]
-                                
-                                # Reparse the JSON from the updated response
-                                if "```json" in content:
-                                    json_content = content.split("```json")[1].split("```")[0].strip()
-                                elif "```" in content:
-                                    json_content = content.split("```")[1].strip()
-                                else:
-                                    json_content = content
-                                
-                                # Parse the updated JSON
-                                result_data = json.loads(json_content)
+                                })
                     
                     # Create StepResult
                     step_result = StepResult(
