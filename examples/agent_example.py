@@ -9,7 +9,6 @@ import json
 import asyncio
 from typing import Set, Optional, Dict, List, Any
 from pathlib import Path
-import logging
 
 # Add the parent directory to the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -57,9 +56,9 @@ async def run_agent(
     # Configure logger
     log_level_enum = LogLevel[log_level.upper()]
     configure_logger(
-        level=log_level_enum,
+        log_level=log_level_enum,
         log_file=log_file,
-        log_format="json" if log_file else "text"
+        structured_logging=True if log_file else False
     )
     
     print(f"🤖 Running agent with task: {task}")
@@ -128,53 +127,53 @@ async def run_agent(
 
 
 def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(description="Run MSR Agent with specified tools and configuration")
-    parser.add_argument("task", help="The task to execute")
-    parser.add_argument("--model", help="Model to use (e.g., qwen/qwen2.5-32b-instruct)")
-    parser.add_argument("--temperature", type=float, default=0.7, help="Temperature for model sampling")
-    parser.add_argument("--steps", type=int, default=5, help="Maximum number of steps in the plan")
-    parser.add_argument("--enable-python", action="store_true", help="Enable Python code execution")
-    parser.add_argument("--enable-terminal", action="store_true", help="Enable terminal command execution")
-    parser.add_argument("--enable-web-search", action="store_true", help="Enable web search")
-    parser.add_argument("--enable-file-operations", action="store_true", help="Enable file operations")
-    parser.add_argument("--enable-data-analysis", action="store_true", help="Enable data analysis")
-    parser.add_argument("--enable-visualization", action="store_true", help="Enable visualization")
-    parser.add_argument("--output-file", help="File to save the output to")
-    parser.add_argument("--no-approval", action="store_true", help="Skip step approval")
-    parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], default="INFO", help="Logging level")
-    parser.add_argument("--log-file", default="logs/agent.log", help="Log file path")
+    """Parse command line arguments and run the agent."""
+    parser = argparse.ArgumentParser(description="Run an MSR Agent with various tools and configurations.")
+    
+    # Basic configuration
+    parser.add_argument("task", help="The task description for the agent", type=str)
+    parser.add_argument("--model", help="Model to use (default from config or Claude 3 Opus)", type=str)
+    parser.add_argument("--temperature", help="Temperature for generation (creativity)", type=float, default=0.7)
+    
+    # Plan configuration
+    parser.add_argument("--steps", help="Maximum number of steps in the plan", type=int, default=3)
+    
+    # Tool enablement
+    parser.add_argument("--enable-python", help="Enable Python code execution", action="store_true")
+    parser.add_argument("--enable-terminal", help="Enable terminal commands", action="store_true")
+    parser.add_argument("--enable-web-search", help="Enable web search", action="store_true")
+    parser.add_argument("--enable-file-operations", help="Enable file operations", action="store_true")
+    parser.add_argument("--enable-data-analysis", help="Enable data analysis", action="store_true")
+    parser.add_argument("--enable-visualization", help="Enable data visualization", action="store_true")
+    
+    # Output and execution options
+    parser.add_argument("--output-file", help="File path to save the agent state as JSON", type=str)
+    parser.add_argument("--no-approval", help="Don't require approval before executing steps", action="store_true")
+    
+    # Logging options
+    parser.add_argument("--log-level", help="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)", type=str, default="INFO", 
+                      choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+    parser.add_argument("--log-file", help="File path to save logs", type=str)
     
     args = parser.parse_args()
     
-    # Create logs directory if it doesn't exist
-    os.makedirs(os.path.dirname(args.log_file), exist_ok=True)
-    
-    # Configure logging
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(args.log_file),
-            logging.StreamHandler()
-        ]
-    )
-    
-    # Run the agent
-    run_agent(
+    # Run the agent with the specified configuration
+    asyncio.run(run_agent(
         task=args.task,
         model=args.model,
         temperature=args.temperature,
         steps=args.steps,
+        output_file=args.output_file,
+        approve_execution=not args.no_approval,
         enable_python=args.enable_python,
         enable_terminal=args.enable_terminal,
         enable_web_search=args.enable_web_search,
         enable_file_operations=args.enable_file_operations,
         enable_data_analysis=args.enable_data_analysis,
         enable_visualization=args.enable_visualization,
-        output_file=args.output_file,
-        approve_execution=not args.no_approval
-    )
+        log_level=args.log_level,
+        log_file=args.log_file,
+    ))
 
 
 if __name__ == "__main__":
