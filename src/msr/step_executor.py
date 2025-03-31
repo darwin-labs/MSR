@@ -80,6 +80,7 @@ class StepExecutor:
         max_tokens: int = 2048,
         allow_code_execution: bool = False,
         allow_command_execution: bool = False,
+        share_output_with_llm: bool = True,  # Whether to share execution results with the LLM
         **kwargs
     ):
         """
@@ -92,13 +93,18 @@ class StepExecutor:
             max_tokens: Default max tokens for generation (default: 2048)
             allow_code_execution: Whether to allow Python code execution (default: False)
             allow_command_execution: Whether to allow terminal command execution (default: False)
+            share_output_with_llm: Whether to share execution results with the LLM (default: True)
             **kwargs: Additional parameters for generation
         """
         # Use Claude as default model for better reasoning
         default_model = model or config_manager.get("EXECUTOR_MODEL", "anthropic/claude-3-opus-20240229")
         
         # Create service if not provided
-        self.service = service or create_openrouter_service(model=default_model)
+        self._service = service or create_openrouter_service(model=default_model)
+        
+        # Store service model name instead of the actual service object
+        # to avoid JSON serialization issues
+        self.model_name = self._service.default_model
         
         # Store generation parameters
         self.temperature = temperature
@@ -111,6 +117,7 @@ class StepExecutor:
         # Security flags
         self.allow_code_execution = allow_code_execution
         self.allow_command_execution = allow_command_execution
+        self.share_output_with_llm = share_output_with_llm
         
         # Get logger
         self.logger = get_logger()
@@ -525,14 +532,14 @@ If you use code or command execution, include the code or commands in the approp
             task_id=task_id,
             context={
                 "step_id": step_id,
-                "model": self.service.model,
+                "model": self.model_name,
                 "temperature": params["temperature"]
             }
         )
         
         try:
             # Make API call
-            response = await self.service.generate_chat_response(
+            response = await self._service.generate_chat_response(
                 messages=messages,
                 **params
             )

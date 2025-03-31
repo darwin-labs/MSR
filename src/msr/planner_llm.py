@@ -77,50 +77,46 @@ class ResearchPlan:
 
 class PlannerLLM:
     """
-    Service for generating structured research plans using LLMs.
+    LLM-based planner for generating research plans with structured steps.
     """
     
     def __init__(
         self,
-        service: Optional[OpenRouterService] = None,
-        model: Optional[str] = None,
-        temperature: float = 0.3,  # Lower temperature for more structured output
-        max_tokens: int = 4096,
-        max_steps: int = 7,
+        model: Optional[Union[str, OpenRouterService]] = None, 
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+        max_steps: int = 7,  # Maximum number of steps to generate
         **kwargs
     ):
         """
-        Initialize the planner service.
+        Initialize the PlannerLLM.
         
         Args:
-            service: OpenRouter service instance (created if not provided)
-            model: Model to use (default: from config or anthropic/claude-3-opus)
-            temperature: Default temperature for generation (default: 0.3)
-            max_tokens: Default max tokens for generation (default: 4096)
+            model: Model to use (string ID) or a configured OpenRouterService
+            temperature: Default temperature for generation (lower for planning is better)
+            max_tokens: Default maximum tokens to generate
             max_steps: Maximum number of steps to generate (default: 7)
             **kwargs: Additional parameters for generation
         """
-        # Use Claude as default model for better planning and JSON formatting
-        default_model = model or config_manager.get("PLANNER_MODEL", "anthropic/claude-3-opus-20240229")
-        
-        # Create service if not provided, optimized for planning
-        if service is None:
-            planning_task = "Create a structured research plan with clear steps and dependencies"
+        # If model is a string, create a service with that model
+        if isinstance(model, str):
+            self._service = create_openrouter_service(model=model)
+        # If model is an OpenRouterService, use it directly
+        elif isinstance(model, OpenRouterService):
+            self._service = model
+        # Otherwise, create a default service
+        else:
+            default_model = config_manager.get("PLANNER_MODEL", "anthropic/claude-3-opus-20240229")
+            self._service = create_openrouter_service(model=default_model)
             
-            # Try to use model selector first, fall back to direct service creation
-            try:
-                service = get_service_for_task(planning_task)
-            except Exception as e:
-                print(f"Warning: Could not use model selector: {str(e)}")
-                service = create_openrouter_service(model=default_model)
-        
-        self.service = service
-        
         # Store generation parameters
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_steps = max_steps
         self.kwargs = kwargs
+        
+        # Store the model name to avoid serialization issues
+        self.model_name = self._service.default_model
     
     def _create_planning_prompt(
         self, 
@@ -252,7 +248,7 @@ Research Prompt: {prompt}"""
         
         try:
             # Make API call
-            response = await self.service.generate_chat_response(
+            response = await self._service.generate_chat_response(
                 messages=messages,
                 **params
             )
@@ -402,7 +398,7 @@ def create_planner(
     
     # Create and return the planner
     return PlannerLLM(
-        service=service,
+        model=service,
         temperature=temperature,
         max_tokens=max_tokens
     ) 
