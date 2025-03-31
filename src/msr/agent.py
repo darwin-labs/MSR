@@ -614,27 +614,27 @@ class Agent:
     
     def execute_step(
         self,
-        step_index: Optional[int] = None,
+        step_id: str,
         additional_context: Optional[str] = None,
         **kwargs
-    ) -> StepResult:
+    ) -> Optional[StepResult]:
         """
-        Execute a single step of the plan (synchronous wrapper).
+        Execute a single step by ID (synchronous wrapper).
         
         Args:
-            step_index: Index of the step to execute (default: current step)
+            step_id: ID of the step to execute
             additional_context: Additional context for execution
             **kwargs: Additional parameters for execution
             
         Returns:
-            Result of executing the step
+            Result of executing the step or None if step not found
         """
         # Create a new event loop and run the async function
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(
                 self.execute_step_async(
-                    step_index=step_index,
+                    step_id=step_id,
                     additional_context=additional_context,
                     **kwargs
                 )
@@ -683,7 +683,7 @@ class Agent:
         for i, step in enumerate(self.state.plan.steps):
             try:
                 result = await self.execute_step_async(
-                    step_index=i,
+                    step_id=step.id,
                     additional_context=additional_context,
                     **kwargs
                 )
