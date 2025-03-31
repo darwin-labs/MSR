@@ -799,6 +799,26 @@ You'll receive tool results that you can use to update your findings.
                 {"role": "user", "content": user_prompt}
             ]
             
+            # Create execution parameters without any JSON-problematic objects
+            execution_params = {
+                "model": self.model_name,  # Use model name string, not the service object
+                "temperature": temp,
+                "max_tokens": tokens
+            }
+            
+            # Only add tools parameter if we have tools defined
+            if tools:
+                execution_params["tools"] = tools
+                
+            # Filter kwargs to remove any non-serializable objects
+            filtered_kwargs = {}
+            for key, value in kwargs.items():
+                if isinstance(value, (str, int, float, bool, list, dict)) or value is None:
+                    filtered_kwargs[key] = value
+            
+            # Add filtered kwargs to execution params
+            execution_params.update(filtered_kwargs)
+            
             # Continue conversation until step is complete or max iterations reached
             max_iterations = 5
             current_iteration = 0
@@ -808,14 +828,10 @@ You'll receive tool results that you can use to update your findings.
                 current_iteration += 1
                 print(f"\n--- Interaction {current_iteration}/{max_iterations} ---")
                 
-                # Call LLM to execute the step
+                # Call LLM to execute the step with safe parameters
                 response = await self._service.generate_chat_response(
                     messages=messages,
-                    model=self.model_name,
-                    temperature=temp,
-                    max_tokens=tokens,
-                    tools=tools if tools else None,
-                    **kwargs
+                    **execution_params
                 )
                 
                 # Extract assistant's response

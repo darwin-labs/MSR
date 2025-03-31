@@ -136,6 +136,7 @@ class OpenRouterService(LLMService):
         max_tokens: int = 1024,
         temperature: float = 0.7,
         model: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -146,6 +147,7 @@ class OpenRouterService(LLMService):
             max_tokens: Maximum number of tokens to generate
             temperature: Sampling temperature
             model: Model to use (default: self.default_model)
+            tools: List of tool definitions for function calling
             **kwargs: Additional generation parameters
             
         Returns:
@@ -155,18 +157,25 @@ class OpenRouterService(LLMService):
         await self._ensure_session()
         
         # Use default model if none specified
-        model = model or self.default_model
+        model_name = model or self.default_model
         
         # Prepare request payload
         payload = {
-            "model": model,
+            "model": model_name,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature
         }
         
+        # Add tools if provided
+        if tools:
+            payload["tools"] = tools
+        
         # Add additional parameters
         for key, value in kwargs.items():
+            # Skip OpenRouterService object if accidentally passed
+            if key == "service" or (isinstance(value, object) and not isinstance(value, (str, int, float, bool, list, dict, type(None)))):
+                continue
             payload[key] = value
         
         try:
