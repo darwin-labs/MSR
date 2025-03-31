@@ -190,8 +190,7 @@ class Agent:
             temperature=self.temperature,
             max_tokens=self.kwargs.get("max_tokens", 2048),
             allow_code_execution=allow_code_execution,
-            allow_command_execution=allow_command_execution,
-            share_output_with_llm=True  # Always share execution results with the LLM
+            allow_command_execution=allow_command_execution
         )
     
     def save_state(self):
@@ -334,16 +333,59 @@ class Agent:
             
             # Log plan generation completed
             if self.state.plan:
-                self.logger.log_plan_generation_completed(
-                    agent_id=self.agent_id,
-                    task_id=self.task_id,
-                    plan_title=self.state.plan.title,
-                    num_steps=len(self.state.plan.steps),
-                    context={
-                        "objective": self.state.plan.objective,
-                        "description": self.state.plan.description
-                    }
-                )
+                # Check if the plan has an error step
+                error_steps = [step for step in self.state.plan.steps if step.id.startswith("error")]
+                
+                if error_steps:
+                    # Log plan generation error
+                    self.logger.log_error(
+                        message="Plan generation failed with JSON format error",
+                        agent_id=self.agent_id,
+                        task_id=self.task_id,
+                        context={
+                            "error_step_title": error_steps[0].title,
+                            "error_description": error_steps[0].description,
+                            "metadata": self.state.plan.metadata
+                        }
+                    )
+                    self.logger.warning(
+                        message=f"Generated plan contains error steps: {error_steps[0].title}",
+                        context={
+                            "error_description": error_steps[0].description
+                        }
+                    )
+                else:
+                    # Log successful plan generation with more details
+                    self.logger.log_plan_generation_completed(
+                        agent_id=self.agent_id,
+                        task_id=self.task_id,
+                        plan_title=self.state.plan.title,
+                        num_steps=len(self.state.plan.steps),
+                        context={
+                            "objective": self.state.plan.objective,
+                            "description": self.state.plan.description,
+                            "steps": [
+                                {
+                                    "id": step.id,
+                                    "title": step.title,
+                                    "goal": step.goal,
+                                    "dependencies": step.dependencies
+                                }
+                                for step in self.state.plan.steps
+                            ]
+                        }
+                    )
+                    
+                    # Print the plan
+                    print(f"\n==== GENERATED RESEARCH PLAN ====")
+                    print(f"Title: {self.state.plan.title}")
+                    print(f"Objective: {self.state.plan.objective}")
+                    print(f"Steps: {len(self.state.plan.steps)}")
+                    for step in self.state.plan.steps:
+                        print(f"\n  Step {step.id}: {step.title}")
+                        print(f"  Goal: {step.goal}")
+                        print(f"  Dependencies: {step.dependencies if step.dependencies else 'None'}")
+                    print("================================\n")
             
             # Save state after generating plan
             self.save_state()
@@ -351,12 +393,15 @@ class Agent:
             return self.state.plan
             
         except Exception as e:
-            # Log error
-            self.logger.error(
-                message=f"Plan generation failed: {str(e)}",
-                event_type=LogEventType.ERROR,
+            # Log any unexpected exceptions during plan generation
+            self.logger.log_error(
+                message=f"Unexpected error during plan generation: {str(e)}",
                 agent_id=self.agent_id,
-                task_id=self.task_id
+                task_id=self.task_id,
+                context={
+                    "exception_type": type(e).__name__,
+                    "prompt": prompt[:200] + "..." if len(prompt) > 200 else prompt
+                }
             )
             raise
     
