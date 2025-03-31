@@ -88,7 +88,7 @@ class StepExecutor:
         
         Args:
             service: OpenRouter service instance (created if not provided)
-            model: Model to use (default: from config or anthropic/claude-3-opus)
+            model: Model to use (default: from config or google/gemini-2.0-flash-001)
             temperature: Default temperature for generation (default: 0.7)
             max_tokens: Default max tokens for generation (default: 2048)
             allow_code_execution: Whether to allow Python code execution (default: False)
@@ -97,7 +97,7 @@ class StepExecutor:
             **kwargs: Additional parameters for generation
         """
         # Use Claude as default model for better reasoning
-        default_model = model or config_manager.get("EXECUTOR_MODEL", "anthropic/claude-3-opus-20240229")
+        default_model = model or config_manager.get("EXECUTOR_MODEL", "google/gemini-2.0-flash-001")
         
         # Create service if not provided
         self._service = service or create_openrouter_service(model=default_model)

@@ -35,12 +35,12 @@ class TaskType(Enum):
 # Default model map - can be overridden through configuration
 DEFAULT_MODEL_MAP = {
     TaskType.CODING: "anthropic/claude-3-sonnet-20240229",  # Alternative: qwen/qwen-2.5-coder-32b-instruct
-    TaskType.MATH: "anthropic/claude-3-opus-20240229",
-    TaskType.SCIENCE: "anthropic/claude-3-opus-20240229",
-    TaskType.RESEARCH: "anthropic/claude-3-opus-20240229",
-    TaskType.PLANNING: "anthropic/claude-3-opus-20240229",
+    TaskType.MATH: "google/gemini-2.0-flash-001",
+    TaskType.SCIENCE: "google/gemini-2.0-flash-001",
+    TaskType.RESEARCH: "google/gemini-2.0-flash-001",
+    TaskType.PLANNING: "google/gemini-2.0-flash-001",
     TaskType.CREATIVE: "qwen/qwen2.5-32b-instruct",
-    TaskType.REASONING: "anthropic/claude-3-opus-20240229",
+    TaskType.REASONING: "google/gemini-2.0-flash-001",
     TaskType.GENERAL: "qwen/qwen2.5-32b-instruct"
 }
 

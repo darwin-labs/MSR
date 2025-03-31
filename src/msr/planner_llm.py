@@ -106,7 +106,7 @@ class PlannerLLM:
             self._service = model
         # Otherwise, create a default service
         else:
-            default_model = config_manager.get("PLANNER_MODEL", "anthropic/claude-3-opus-20240229")
+            default_model = config_manager.get("PLANNER_MODEL", "google/gemini-2.0-flash-001")
             self._service = create_openrouter_service(model=default_model)
             
         # Store generation parameters
