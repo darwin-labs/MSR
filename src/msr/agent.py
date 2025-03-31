@@ -695,10 +695,9 @@ class Agent:
         finally:
             loop.close()
     
-    def run(
+    async def run(
         self,
-        num_steps: int = 5,
-        domain: Optional[str] = None,
+        planner_config: Dict[str, Any] = None,
         additional_context: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
@@ -706,8 +705,7 @@ class Agent:
         Run the full agent workflow (generate plan and execute all steps).
         
         Args:
-            num_steps: Suggested number of steps
-            domain: Specific domain for the research
+            planner_config: Configuration for the planner including num_steps, domain, etc.
             additional_context: Additional context
             **kwargs: Additional parameters
             
@@ -720,16 +718,24 @@ class Agent:
             task_id=self.task_id
         )
         
-        # Generate plan
-        plan = self.generate_plan(
+        # Set default planner config if not provided
+        if planner_config is None:
+            planner_config = {"num_steps": 5}
+        
+        # Extract planner parameters
+        num_steps = planner_config.get("max_steps", 5)
+        domain = planner_config.get("domain")
+        
+        # Generate plan asynchronously
+        plan = await self.generate_plan_async(
             num_steps=num_steps,
             domain=domain,
             additional_context=additional_context,
             **kwargs
         )
         
-        # Execute plan
-        results = self.execute_plan(
+        # Execute plan asynchronously
+        results = await self.execute_plan_async(
             additional_context=additional_context,
             **kwargs
         )
