@@ -485,6 +485,31 @@ class MSRLogger:
             },
             agent_id=agent_id
         )
+    
+    def log_error(
+        self,
+        message: str,
+        agent_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Log an error message with the ERROR event type.
+        
+        Args:
+            message: Error message to log
+            agent_id: ID of the agent (optional)
+            task_id: ID of the task (optional)
+            context: Additional context information (optional)
+        """
+        self._log(
+            event_type=LogEventType.ERROR,
+            message=message,
+            level=LogLevel.ERROR,
+            context=context,
+            agent_id=agent_id,
+            task_id=task_id
+        )
 
 
 # Global logger instance
