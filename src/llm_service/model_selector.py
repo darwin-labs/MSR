@@ -32,16 +32,16 @@ class TaskType(Enum):
     GENERAL = "general"
 
 
-# Default model map - can be overridden through configuration
+# Default mapping of task types to models
 DEFAULT_MODEL_MAP = {
-    TaskType.CODING: "anthropic/claude-3-sonnet-20240229",  # Alternative: qwen/qwen-2.5-coder-32b-instruct
-    TaskType.MATH: "google/gemini-2.0-flash-001",
-    TaskType.SCIENCE: "google/gemini-2.0-flash-001",
-    TaskType.RESEARCH: "google/gemini-2.0-flash-001",
-    TaskType.PLANNING: "google/gemini-2.0-flash-001",
-    TaskType.CREATIVE: "qwen/qwen2.5-32b-instruct",
-    TaskType.REASONING: "google/gemini-2.0-flash-001",
-    TaskType.GENERAL: "qwen/qwen2.5-32b-instruct"
+    TaskType.CODING: "deepseek/deepseek-v3-base:free",
+    TaskType.MATH: "deepseek/deepseek-v3-base:free",
+    TaskType.SCIENCE: "deepseek/deepseek-v3-base:free",
+    TaskType.RESEARCH: "deepseek/deepseek-v3-base:free",
+    TaskType.PLANNING: "deepseek/deepseek-v3-base:free",
+    TaskType.CREATIVE: "deepseek/deepseek-v3-base:free",
+    TaskType.REASONING: "deepseek/deepseek-v3-base:free",
+    TaskType.GENERAL: "deepseek/deepseek-v3-base:free"
 }
 
 # Keywords for identifying task types from task descriptions

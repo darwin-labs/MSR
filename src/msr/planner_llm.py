@@ -82,8 +82,9 @@ class PlannerLLM:
     
     def __init__(
         self,
-        model: Optional[Union[str, OpenRouterService]] = None, 
-        temperature: float = 0.2,
+        service: Optional[OpenRouterService] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
         max_tokens: int = 2048,
         max_steps: int = 7,  # Maximum number of steps to generate
         **kwargs
@@ -92,21 +93,19 @@ class PlannerLLM:
         Initialize the PlannerLLM.
         
         Args:
-            model: Model to use (string ID) or a configured OpenRouterService
-            temperature: Default temperature for generation (lower for planning is better)
-            max_tokens: Default maximum tokens to generate
+            service: OpenRouter service instance
+            model: Model name to use
+            temperature: Temperature for generation
+            max_tokens: Maximum tokens to generate
             max_steps: Maximum number of steps to generate (default: 7)
             **kwargs: Additional parameters for generation
         """
-        # If model is a string, create a service with that model
-        if isinstance(model, str):
-            self._service = create_openrouter_service(model=model)
-        # If model is an OpenRouterService, use it directly
-        elif isinstance(model, OpenRouterService):
-            self._service = model
+        # Create or use provided service
+        if service:
+            self._service = service
         # Otherwise, create a default service
         else:
-            default_model = config_manager.get("PLANNER_MODEL", "google/gemini-2.0-flash-001")
+            default_model = config_manager.get("PLANNER_MODEL", "deepseek/deepseek-v3-base:free")
             self._service = create_openrouter_service(model=default_model)
             
         # Store generation parameters
@@ -257,6 +256,8 @@ Research Prompt: {prompt}"""
             if "choices" in response and len(response["choices"]) > 0:
                 content = response["choices"][0]["message"]["content"]
                 
+                print("Planning LLM response:", content)
+                
                 # Parse JSON content
                 try:
                     # Sometimes the LLM might return markdown-formatted JSON
@@ -398,7 +399,7 @@ def create_planner(
     
     # Create and return the planner
     return PlannerLLM(
-        model=service,
+        service=service,
         temperature=temperature,
         max_tokens=max_tokens
     ) 

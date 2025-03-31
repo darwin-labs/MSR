@@ -901,50 +901,42 @@ def create_agent(
     require_step_approval: bool = True
 ) -> Agent:
     """
-    Create an agent with the specified parameters.
+    Create an Agent with the specified configuration.
     
     Args:
         task: The task to perform
         allowed_tools: List of tools the agent is allowed to use
         agent_id: Optional agent ID (UUID will be generated if not provided)
         model: Model to use for the agent (will be automatically selected if not provided)
-        temperature: Temperature for generation
-        save_state_path: Path to save agent state
-        require_step_approval: Whether to require approval for step execution
+        temperature: Temperature for generation (default: 0.7)
+        save_state_path: Path to save agent state (optional)
+        require_step_approval: Whether to require approval for step execution (default: True)
         
     Returns:
         Configured Agent instance
     """
-    # Generate agent ID if not provided
-    if not agent_id:
-        agent_id = str(uuid.uuid4())
-    
-    # Automatically select the best LLM service for this task
-    if model is None:
-        try:
-            # Use the model selector to get the best service for this task
-            service = create_service_for_task(task)
-        except Exception as e:
-            # Fall back to default model if selection fails
-            print(f"Warning: Task-specific model selection failed: {str(e)}")
-            print("Using default model instead.")
-            service = create_openrouter_service()
-    else:
-        # Use specified model
+    # Use specified model or attempt to select best model for task
+    if model:
         service = create_openrouter_service(model=model)
+    else:
+        try:
+            # Try to get service tuned for this specific task
+            service = create_service_for_task(task)
+        except:
+            # Fall back to default model
+            service = create_openrouter_service(model="deepseek/deepseek-v3-base:free")
     
-    # Create agent
-    agent = Agent(
+    # Create and return the agent
+    return Agent(
         task=task,
         allowed_tools=allowed_tools,
         agent_id=agent_id,
         planner_llm=PlannerLLM(
-            model=service,
             temperature=temperature,
-            max_tokens=2048
+            max_steps=2048
         ),
         step_executor=StepExecutor(
-            model=service,
+            model=model,
             temperature=temperature,
             max_tokens=2048
         ),
@@ -953,6 +945,4 @@ def create_agent(
         max_tokens=2048,
         save_state_path=save_state_path,
         require_step_approval=require_step_approval
-    )
-    
-    return agent 
+    ) 
