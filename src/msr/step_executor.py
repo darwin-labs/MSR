@@ -462,292 +462,189 @@ If you use code or command execution, include the code or commands in the approp
         **kwargs
     ) -> StepResult:
         """
-        Execute a research step asynchronously.
+        Execute a step of the research plan asynchronously.
         
         Args:
-            step: The research step to execute
-            research_plan: The overall research plan
-            previous_results: Results from previous steps (optional)
-            additional_context: Any additional context (optional)
-            step_id_for_logs: Step ID for logging (optional)
-            task_id_for_logs: Task ID for logging (optional)
-            agent_id_for_logs: Agent ID for logging (optional)
-            temperature: Temperature for generation (overrides default)
-            max_tokens: Max tokens for generation (overrides default)
+            step: Research step to execute
+            research_plan: The full research plan
+            previous_results: Results from previous steps
+            additional_context: Additional context for execution
+            step_id_for_logs: Optional step ID for logging
+            task_id_for_logs: Optional task ID for logging
+            agent_id_for_logs: Optional agent ID for logging
+            temperature: Temperature for generation
+            max_tokens: Max tokens for generation
             **kwargs: Additional parameters for generation
             
         Returns:
-            A StepResult object containing the execution results
+            StepResult object with execution results
         """
-        # Set IDs for logging
-        agent_id = agent_id_for_logs
-        task_id = task_id_for_logs
-        step_id = step_id_for_logs or step.id
+        # Use provided temperature/max_tokens or fall back to defaults
+        temp = temperature if temperature is not None else self.temperature
+        tokens = max_tokens if max_tokens is not None else self.max_tokens
         
-        self.logger.info(
-            message=f"Executing step: {step.title}",
-            event_type=LogEventType.STEP_EXECUTION_STARTED,
-            agent_id=agent_id,
-            task_id=task_id,
-            context={
-                "step_id": step_id,
-                "step_goal": step.goal,
-                "dependencies": step.dependencies
-            }
-        )
-        
-        # Create the execution prompt
-        execution_prompt = self._create_step_execution_prompt(
+        # Create prompt for the step execution
+        prompt = self._create_step_execution_prompt(
             step=step,
             research_plan=research_plan,
             previous_results=previous_results,
             additional_context=additional_context
         )
         
-        # Get parameters with defaults
-        params = {
-            "temperature": temperature or self.temperature,
-            "max_tokens": max_tokens or self.max_tokens,
-        }
+        # Initialize execution records
+        code_executions = []
+        command_executions = []
         
-        # Update with any instance kwargs
-        params.update(self.kwargs)
-        
-        # Override with any function-specific kwargs
-        params.update(kwargs)
-        
-        # Set format to JSON to help models return well-structured JSON
-        params["response_format"] = {"type": "json_object"}
-        
-        # Create chat messages
-        messages = [
-            {"role": "system", "content": execution_prompt},
-            {"role": "user", "content": f"Execute research step {step.id}: {step.title}"}
-        ]
-        
-        self.logger.debug(
-            message="Sending step execution request to LLM",
-            event_type=LogEventType.STEP_EXECUTION_STARTED,
-            agent_id=agent_id,
-            task_id=task_id,
-            context={
-                "step_id": step_id,
-                "model": self.model_name,
-                "temperature": params["temperature"]
-            }
+        # Initialize step result
+        step_result = StepResult(
+            step_id=step.id,
+            success=False,
+            findings="",
+            learning="",
+            code_executions=code_executions,
+            command_executions=command_executions
         )
         
         try:
-            # Make API call
-            response = await self._service.generate_chat_response(
-                messages=messages,
-                **params
-            )
-            
-            # Extract content from response
-            if "choices" in response and len(response["choices"]) > 0:
-                content = response["choices"][0]["message"]["content"]
+            # Log step execution
+            if agent_id_for_logs and task_id_for_logs:
+                self.logger.info(
+                    message=f"Executing step: {step.id} - {step.title}",
+                    agent_id=agent_id_for_logs,
+                    task_id=task_id_for_logs,
+                    context={
+                        "step_goal": step.goal,
+                        "prompt_length": len(prompt)
+                    }
+                )
                 
-                # Parse JSON content
-                try:
-                    # Handle potential markdown-formatted JSON
-                    if "```json" in content:
-                        json_content = content.split("```json")[1].split("```")[0].strip()
-                    elif "```" in content:
-                        json_content = content.split("```")[1].strip()
-                    else:
-                        json_content = content
-                    
-                    # Parse the JSON
-                    result_data = json.loads(json_content)
-                    
-                    self.logger.info(
-                        message="Successfully parsed LLM response as JSON",
-                        event_type=LogEventType.STEP_EXECUTION_COMPLETED,
-                        agent_id=agent_id,
-                        task_id=task_id,
-                        context={
-                            "step_id": step_id
-                        }
-                    )
-                    
-                    # Execute any code blocks
-                    code_execution_results = []
-                    if self.allow_code_execution and "code_blocks" in result_data:
-                        for i, code_block in enumerate(result_data.get("code_blocks", [])):
-                            code = code_block.get("code", "")
-                            description = code_block.get("description", "")
-                            
-                            if code:
-                                self.logger.info(
-                                    message=f"Executing code block {i+1}: {description}",
-                                    event_type=LogEventType.CODE_EXECUTION,
-                                    agent_id=agent_id,
-                                    task_id=task_id,
-                                    context={
-                                        "step_id": step_id,
-                                        "code_snippet": code[:100] + "..." if len(code) > 100 else code
-                                    }
-                                )
-                                
-                                # Execute the code
-                                execution_result = self.execute_python_code(code)
-                                
-                                # Store execution result
-                                code_execution_results.append({
-                                    "code": code,
-                                    "description": description,
-                                    "success": execution_result.success,
-                                    "output": execution_result.output,
-                                    "error": execution_result.error
-                                })
-                    
-                    # Execute any command blocks
-                    command_execution_results = []
-                    if self.allow_command_execution and "command_blocks" in result_data:
-                        for i, command_block in enumerate(result_data.get("command_blocks", [])):
-                            command = command_block.get("command", "")
-                            description = command_block.get("description", "")
-                            
-                            if command:
-                                self.logger.info(
-                                    message=f"Executing command block {i+1}: {description}",
-                                    event_type=LogEventType.COMMAND_EXECUTION,
-                                    agent_id=agent_id,
-                                    task_id=task_id,
-                                    context={
-                                        "step_id": step_id,
-                                        "command": command
-                                    }
-                                )
-                                
-                                # Execute the command
-                                execution_result = self.execute_command(command)
-                                
-                                # Store execution result
-                                command_execution_results.append({
-                                    "command": command,
-                                    "description": description,
-                                    "success": execution_result.success,
-                                    "stdout": execution_result.stdout,
-                                    "stderr": execution_result.stderr,
-                                    "exit_code": execution_result.exit_code
-                                })
-                    
-                    # Create StepResult
-                    step_result = StepResult(
-                        step_id=step.id,
-                        success=True,
-                        findings=result_data.get("findings", ""),
-                        learning=result_data.get("learning", ""),
-                        next_steps=result_data.get("next_steps", []),
-                        artifacts=result_data.get("artifacts", {}),
-                        code_executions=code_execution_results,
-                        command_executions=command_execution_results
-                    )
-                    
-                    # Log success
-                    self.logger.info(
-                        message=f"Step execution completed successfully: {step.title}",
-                        event_type=LogEventType.STEP_EXECUTION_COMPLETED,
-                        agent_id=agent_id,
-                        task_id=task_id,
-                        context={
-                            "step_id": step_id,
-                            "learning": step_result.learning,
-                            "findings_snippet": step_result.findings[:100] + "..." if len(step_result.findings) > 100 else step_result.findings,
-                            "next_steps_count": len(step_result.next_steps),
-                            "code_executions_count": len(code_execution_results),
-                            "command_executions_count": len(command_execution_results)
-                        }
-                    )
-                    
-                    # Add to execution history
-                    self.execution_history.append(step_result)
-                    
-                    return step_result
+            # Call LLM to execute the step
+            response = await self._service.async_chat(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.model_name,  # Use model name instead of service object
+                temperature=temp,
+                max_tokens=tokens,
+                **kwargs
+            )
+            
+            # Parse the response
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
+            if not content:
+                raise ValueError("Empty response from LLM")
+            
+            # Extract execution commands
+            code_blocks = self._extract_code_blocks(content)
+            
+            # Execute any Python code or shell commands in the response
+            for block in code_blocks:
+                block_type = block["type"].lower()
+                code = block["code"]
+                description = block.get("description", "")
                 
-                except json.JSONDecodeError as e:
-                    # If parsing fails, create an error result
-                    error_msg = f"JSON decode error: {str(e)}"
-                    self.logger.error(
-                        message=f"Failed to parse LLM response as JSON: {error_msg}",
-                        event_type=LogEventType.ERROR,
-                        agent_id=agent_id,
-                        task_id=task_id,
-                        context={
-                            "step_id": step_id,
-                            "raw_response_snippet": content[:200] + "..." if len(content) > 200 else content
+                if block_type in ["python", "py"]:
+                    # Execute Python code if allowed
+                    if self.allow_code_execution:
+                        result = self.execute_python_code(code)
+                        
+                        # Record execution
+                        execution_record = {
+                            "code": code,
+                            "output": result.output,
+                            "success": result.success,
+                            "error": result.error,
+                            "description": description
                         }
-                    )
-                    
-                    error_result = StepResult(
-                        step_id=step.id,
-                        success=False,
-                        findings="Failed to parse LLM response as JSON",
-                        learning="Ensure proper JSON formatting in LLM responses",
-                        error=error_msg,
-                        artifacts={"raw_response": content}
-                    )
-                    
-                    # Add to execution history
-                    self.execution_history.append(error_result)
-                    
-                    return error_result
+                        code_executions.append(execution_record)
+                        
+                        # Update content with execution result if sharing is enabled
+                        if self.share_output_with_llm:
+                            content += f"\n\nCode Execution Result:\n```\n{result.output if result.success else result.error}\n```\n"
+                            
+                elif block_type in ["bash", "shell", "sh", "command"]:
+                    # Execute shell command if allowed
+                    if self.allow_command_execution:
+                        result = self.execute_command(code)
+                        
+                        # Record execution
+                        execution_record = {
+                            "command": code,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                            "exit_code": result.exit_code,
+                            "success": result.success,
+                            "description": description
+                        }
+                        command_executions.append(execution_record)
+                        
+                        # Update content with execution result if sharing is enabled
+                        if self.share_output_with_llm:
+                            content += f"\n\nCommand Execution Result:\n```\nExit Code: {result.exit_code}\nStdout: {result.stdout}\nStderr: {result.stderr}\n```\n"
             
-            # Handle case where no valid response was received
-            error_msg = "No valid response from LLM"
-            self.logger.error(
-                message=error_msg,
-                event_type=LogEventType.ERROR,
-                agent_id=agent_id,
-                task_id=task_id,
-                context={
-                    "step_id": step_id,
-                    "response_status": str(response)
-                }
-            )
+            # After executing commands, ask LLM to interpret results if there were executions
+            if (code_executions or command_executions) and self.share_output_with_llm:
+                # Create a prompt with the original response and execution results
+                interpretation_prompt = f"Based on the step execution and the results of any code or command executions, what are your findings and learnings from this step? Please provide:\n\n1. Findings: Concrete results or insights\n2. Learning: What we learned\n3. Success: Whether the step was successful (yes/no)\n4. Next Steps: Suggestions for what to do next"
+                
+                # Call LLM again to interpret results
+                interpretation_response = await self._service.async_chat(
+                    messages=[
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": content},
+                        {"role": "user", "content": interpretation_prompt}
+                    ],
+                    model=self.model_name,  # Use model name instead of service object
+                    temperature=temp,
+                    max_tokens=tokens,
+                    **kwargs
+                )
+                
+                # Update content with interpretation
+                interpretation_content = interpretation_response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if interpretation_content:
+                    content += f"\n\n{interpretation_content}"
             
-            error_result = StepResult(
-                step_id=step.id,
-                success=False,
-                findings="No valid response received from LLM",
-                learning="Check API connection and parameters",
-                error="No valid response",
-                artifacts={"raw_response": str(response)}
-            )
+            # Process the complete response
+            result = self._parse_step_result(content, step.id)
             
-            # Add to execution history
-            self.execution_history.append(error_result)
+            # Update the step result
+            step_result.success = result.get("success", False)
+            step_result.findings = result.get("findings", "")
+            step_result.learning = result.get("learning", "")
+            step_result.next_steps = result.get("next_steps", [])
             
-            return error_result
+            # Add executions to the result
+            step_result.code_executions = code_executions
+            step_result.command_executions = command_executions
             
+            # Log completion
+            if agent_id_for_logs and task_id_for_logs:
+                self.logger.info(
+                    message=f"Step {step.id} execution completed",
+                    agent_id=agent_id_for_logs,
+                    task_id=task_id_for_logs,
+                    context={
+                        "success": step_result.success,
+                        "findings_length": len(step_result.findings),
+                        "learning_length": len(step_result.learning)
+                    }
+                )
+            
+            # Return the result
+            return step_result
+                
         except Exception as e:
-            # Handle any exceptions
             error_msg = f"Error during step execution: {str(e)}"
             self.logger.error(
                 message=error_msg,
-                event_type=LogEventType.ERROR,
-                agent_id=agent_id,
-                task_id=task_id,
-                context={
-                    "step_id": step_id,
-                    "exception_type": type(e).__name__
-                }
+                event_type=LogEventType.ERROR
             )
             
-            error_result = StepResult(
-                step_id=step.id,
-                success=False,
-                findings="Error occurred during step execution",
-                learning="Handle exceptions in API calls",
-                error=str(e)
-            )
+            # Update step result with error
+            step_result.success = False
+            step_result.error = error_msg
             
-            # Add to execution history
-            self.execution_history.append(error_result)
-            
-            return error_result
+            return step_result
     
     def execute_step(
         self,
@@ -894,6 +791,201 @@ If you use code or command execution, include the code or commands in the approp
         )
         
         return self.execution_history
+
+    def _extract_code_blocks(self, content: str) -> List[Dict[str, str]]:
+        """
+        Extract code blocks from a string.
+        
+        Args:
+            content: Text content containing code blocks
+            
+        Returns:
+            List of extracted code blocks with type and code
+        """
+        blocks = []
+        lines = content.split('\n')
+        
+        in_block = False
+        current_block = {"type": "", "code": "", "description": ""}
+        block_description = ""
+        
+        for line in lines:
+            # Check for block start
+            if not in_block and "```" in line:
+                in_block = True
+                block_type = line.replace("```", "").strip().lower()
+                if block_type:
+                    current_block["type"] = block_type
+                else:
+                    current_block["type"] = "code"  # Default block type
+                
+                # Look for description in previous lines
+                if block_description:
+                    current_block["description"] = block_description
+                
+                continue
+            
+            # Check for block end
+            if in_block and "```" in line:
+                in_block = False
+                blocks.append(current_block)
+                current_block = {"type": "", "code": "", "description": ""}
+                block_description = ""
+                continue
+            
+            # Collect code if inside a block
+            if in_block:
+                current_block["code"] += line + "\n"
+            # Collect potential description before a code block
+            elif not in_block and line.strip():
+                block_description = line.strip()
+        
+        # Clean up code blocks
+        for block in blocks:
+            block["code"] = block["code"].strip()
+        
+        return blocks
+    
+    def _parse_step_result(self, content: str, step_id: str) -> Dict[str, Any]:
+        """
+        Parse the step execution result from the LLM output.
+        
+        Args:
+            content: LLM output content
+            step_id: ID of the step being executed
+            
+        Returns:
+            Dictionary with parsed findings, learnings, success, next steps
+        """
+        result = {
+            "success": False,
+            "findings": "",
+            "learning": "",
+            "next_steps": []
+        }
+        
+        # Try to find structured data in content
+        try:
+            # Look for JSON block first
+            json_match = None
+            if "```json" in content:
+                parts = content.split("```json")
+                if len(parts) > 1:
+                    json_block = parts[1].split("```")[0].strip()
+                    json_match = json.loads(json_block)
+            elif "```" in content:
+                # Try to find any code block that might contain JSON
+                blocks = self._extract_code_blocks(content)
+                for block in blocks:
+                    try:
+                        json_match = json.loads(block["code"])
+                        if isinstance(json_match, dict):
+                            break
+                    except:
+                        continue
+            
+            # If we found JSON, extract fields
+            if json_match and isinstance(json_match, dict):
+                result["findings"] = json_match.get("findings", "")
+                result["learning"] = json_match.get("learning", "")
+                result["success"] = json_match.get("success", False)
+                result["next_steps"] = json_match.get("next_steps", [])
+                return result
+        except:
+            # If JSON parsing failed, continue with text parsing
+            pass
+        
+        # Try to extract structured information from text
+        sections = {
+            "findings": ["findings:", "results:", "observations:"],
+            "learning": ["learning:", "learnings:", "lessons:", "what we learned:"],
+            "success": ["success:", "successful:"],
+            "next_steps": ["next steps:", "next:", "future work:", "what's next:"]
+        }
+        
+        # Split content into lines for analysis
+        lines = content.split('\n')
+        current_section = None
+        
+        for line in lines:
+            line_lower = line.lower().strip()
+            
+            # Check if line starts a new section
+            found_section = False
+            for section, markers in sections.items():
+                for marker in markers:
+                    if line_lower.startswith(marker):
+                        current_section = section
+                        # Extract content after the marker
+                        section_content = line[len(marker):].strip()
+                        
+                        # Special handling for success section
+                        if section == "success":
+                            result[section] = "yes" in section_content.lower() or "true" in section_content.lower()
+                        # Special handling for next steps as a list
+                        elif section == "next_steps" and section_content:
+                            if not result[section]:
+                                result[section] = []
+                            result[section].append(section_content)
+                        # For other sections, start collecting content
+                        elif section_content:
+                            if result[section]:
+                                result[section] += "\n" + section_content
+                            else:
+                                result[section] = section_content
+                        
+                        found_section = True
+                        break
+                if found_section:
+                    break
+            
+            # If not a section header and we're in a section, append content
+            if not found_section and current_section and line.strip():
+                if current_section == "next_steps":
+                    # Check if it's a list item
+                    if line.strip().startswith("- ") or line.strip().startswith("* "):
+                        result[current_section].append(line.strip()[2:])
+                    elif line.strip().startswith("1. ") or line.strip().startswith("2. "):
+                        result[current_section].append(line.strip()[3:])
+                    else:
+                        # Append to the last next step
+                        if result[current_section] and len(result[current_section]) > 0:
+                            result[current_section][-1] += " " + line.strip()
+                else:
+                    if result[current_section]:
+                        result[current_section] += "\n" + line.strip()
+                    else:
+                        result[current_section] = line.strip()
+        
+        # If no structured data was found, use the whole content as findings
+        if not result["findings"]:
+            result["findings"] = content
+        
+        # If no explicit success indicator, default to True
+        if not result.get("success", None):
+            # Look for failure indicators
+            failure_indicators = ["error", "fail", "unsuccessful", "didn't work", "did not work"]
+            for indicator in failure_indicators:
+                if indicator in content.lower():
+                    result["success"] = False
+                    break
+            else:
+                result["success"] = True
+        
+        # Default empty learning if none found
+        if not result["learning"]:
+            # Try to derive learning from findings
+            if result["findings"]:
+                result["learning"] = "Learned information about this research step."
+        
+        # Ensure next_steps is a list
+        if not isinstance(result["next_steps"], list):
+            if result["next_steps"]:
+                result["next_steps"] = [result["next_steps"]]
+            else:
+                result["next_steps"] = []
+        
+        return result
 
 
 # Convenience function to create a step executor

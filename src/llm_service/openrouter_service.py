@@ -249,7 +249,40 @@ class OpenRouterService(LLMService):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         await self._close_session()
-
+    
+    async def async_chat(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Simplified chat method with better error handling.
+        
+        Args:
+            messages: List of chat messages
+            model: Model name to use (default: self.default_model)
+            temperature: Temperature for generation
+            max_tokens: Maximum tokens to generate
+            **kwargs: Additional parameters
+            
+        Returns:
+            Response dictionary with generated content
+        """
+        # Use default model if none specified
+        model_name = model or self.default_model
+        
+        # Call generate_chat_response with the model name, not the service object
+        return await self.generate_chat_response(
+            messages=messages,
+            model=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs
+        )
+    
     @property
     def model(self) -> str:
         """
