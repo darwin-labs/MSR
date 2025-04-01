@@ -53,6 +53,7 @@ class StepResult:
     artifacts: Dict[str, Any] = field(default_factory=dict)
     code_executions: List[Dict[str, Any]] = field(default_factory=list)
     command_executions: List[Dict[str, Any]] = field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
@@ -66,6 +67,7 @@ class StepResult:
             "artifacts": self.artifacts,
             "code_executions": self.code_executions,
             "command_executions": self.command_executions,
+            "tool_calls": self.tool_calls,
             "error": self.error
         }
     
@@ -383,7 +385,7 @@ class StepExecutor:
         research_plan: ResearchPlan,
         previous_results: Optional[List[StepResult]] = None,
         additional_context: Optional[str] = None
-    ) -> str:
+    ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Create a prompt for executing a research step.
         
@@ -394,7 +396,7 @@ class StepExecutor:
             additional_context: Any additional context to provide (optional)
             
         Returns:
-            Formatted prompt for the LLM
+            Tuple of (formatted prompt for the LLM, tool definitions)
         """
         # Format dependency information
         dependency_info = ""
@@ -435,11 +437,14 @@ You MUST respond in a structured JSON format with these fields:
 3. "success": Whether the step was successful (boolean)
 4. "next_steps": Array of suggestions for what to do next
 
-When you need to use a tool, FIRST return the JSON with your current thinking, THEN indicate which tool you want to use.
+When you need to use a tool,
 You'll receive tool results that you can use to update your findings.
 """
 
-        return system_prompt
+        # Get tool definitions
+        tool_definitions = self._get_tool_definitions()
+        
+        return system_prompt, tool_definitions
 
     def _get_tool_definitions(self) -> List[Dict[str, Any]]:
         """
