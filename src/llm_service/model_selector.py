@@ -34,14 +34,14 @@ class TaskType(Enum):
 
 # Default mapping of task types to models
 DEFAULT_MODEL_MAP = {
-    TaskType.CODING: "deepseek/deepseek-v3-base:free",
-    TaskType.MATH: "deepseek/deepseek-v3-base:free",
-    TaskType.SCIENCE: "deepseek/deepseek-v3-base:free",
-    TaskType.RESEARCH: "deepseek/deepseek-v3-base:free",
-    TaskType.PLANNING: "deepseek/deepseek-v3-base:free",
-    TaskType.CREATIVE: "deepseek/deepseek-v3-base:free",
-    TaskType.REASONING: "deepseek/deepseek-v3-base:free",
-    TaskType.GENERAL: "deepseek/deepseek-v3-base:free"
+    TaskType.CODING: "google/gemini-2.0-flash-001",
+    TaskType.MATH: "google/gemini-2.0-flash-001",
+    TaskType.SCIENCE: "google/gemini-2.0-flash-001",
+    TaskType.RESEARCH: "google/gemini-2.0-flash-001",
+    TaskType.PLANNING: "google/gemini-2.0-flash-001",
+    TaskType.CREATIVE: "google/gemini-2.0-flash-001",
+    TaskType.REASONING: "google/gemini-2.0-flash-001",
+    TaskType.GENERAL: "google/gemini-2.0-flash-001"
 }
 
 # Keywords for identifying task types from task descriptions
@@ -87,7 +87,7 @@ class ModelSelector:
         self,
         api_key: Optional[str] = None,
         model_map: Optional[Dict[TaskType, str]] = None,
-        default_model: str = "qwen/qwen2.5-32b-instruct",
+        default_model: str = "google/gemini-2.0-flash-001",
         load_from_config: bool = True
     ):
         """

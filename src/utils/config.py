@@ -165,7 +165,7 @@ OPENAI_API_KEY="your-openai-api-key-here"
 OPENROUTER_API_KEY="your-openrouter-api-key-here"
 
 # Model configuration
-DEFAULT_MODEL="qwen/qwen2.5-32b-instruct"  # Options: qwen/qwen2.5-32b-instruct, anthropic/claude-3-opus-20240229, etc.
+DEFAULT_MODEL="google/gemini-2.0-flash-001"  # Options: qwen/qwen2.5-32b-instruct, anthropic/claude-3-opus-20240229, etc.
 """
     
     template_path = ".env.template"
