@@ -12,6 +12,7 @@ from enum import Enum, auto
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from datetime import datetime
+import aiohttp
 
 # Add parent directory to path if needed
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -754,73 +755,196 @@ class Agent:
         finally:
             loop.close()
     
-    async def run(
-        self,
-        planner_config: Dict[str, Any] = None,
-        additional_context: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
+    async def execute_all_steps(self, max_retries: int = 3, retry_delay: float = 2.0):
         """
-        Run the full agent workflow (generate plan and execute all steps).
+        Execute all steps in the plan with connection error handling and retries.
         
         Args:
-            planner_config: Configuration for the planner including num_steps, domain, etc.
-            additional_context: Additional context
-            **kwargs: Additional parameters
-            
+            max_retries: Maximum number of retry attempts for failed steps (default: 3)
+            retry_delay: Initial delay between retry attempts in seconds (default: 2.0)
+        
         Returns:
-            Dictionary with plan and execution results
+            List of step execution results
         """
+        # Check if plan exists
+        if not self.state.plan or not self.state.plan.steps:
+            error_msg = "No plan generated. Call generate_plan first."
+            self.logger.error(
+                message=error_msg,
+                agent_id=self.agent_id,
+                task_id=self.task_id
+            )
+            raise ValueError(error_msg)
+        
+        # Reset execution state if needed
+        if not self.state.executed_steps:
+            self.state.current_step_index = 0
+            self.state.is_complete = False
+        
+        self.logger.info(
+            message=f"Executing plan: {self.state.plan.title} with {len(self.state.plan.steps)} steps",
+            agent_id=self.agent_id,
+            task_id=self.task_id
+        )
+        
+        # Start from the current step index
+        start_index = self.state.current_step_index
+        results = self.state.executed_steps.copy()
+        
+        # Execute remaining steps
+        for i in range(start_index, len(self.state.plan.steps)):
+            step = self.state.plan.steps[i]
+            self.state.current_step_index = i
+            
+            # Try to execute the step with retries
+            retry_count = 0
+            last_error = None
+            
+            while retry_count <= max_retries:
+                try:
+                    # Set parameters to match the agent's configuration
+                    result = await self.execute_step_async(
+                        step_id=step.id
+                    )
+                    
+                    if result:
+                        # Step executed successfully, add to results
+                        if result not in results:
+                            results.append(result)
+                        # Break out of retry loop
+                        break
+                    else:
+                        # Step execution failed but didn't raise an exception
+                        last_error = ValueError(f"Step {step.id} execution failed without error")
+                        raise last_error
+                        
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    # Handle connection errors with retries
+                    last_error = e
+                    error_type = type(e).__name__
+                    
+                    self.logger.error(
+                        message=f"Connection error ({error_type}) executing step {step.id} (attempt {retry_count+1}/{max_retries+1}): {str(e)}",
+                        agent_id=self.agent_id,
+                        task_id=self.task_id
+                    )
+                    
+                    if retry_count < max_retries:
+                        # Wait longer after each retry (exponential backoff)
+                        wait_time = retry_delay * (2 ** retry_count)
+                        self.logger.info(
+                            message=f"Retrying step {step.id} in {wait_time:.1f} seconds...",
+                            agent_id=self.agent_id,
+                            task_id=self.task_id
+                        )
+                        await asyncio.sleep(wait_time)
+                        retry_count += 1
+                    else:
+                        self.logger.error(
+                            message=f"Max retries ({max_retries}) exceeded for step {step.id}. Moving to next step.",
+                            agent_id=self.agent_id,
+                            task_id=self.task_id
+                        )
+                        # Create a failure result
+                        fail_result = StepResult(
+                            step_id=step.id,
+                            success=False,
+                            findings=f"Step execution failed after {max_retries} retries",
+                            learning="Network or API errors can interrupt execution",
+                            error=f"Connection error: {str(e)}"
+                        )
+                        results.append(fail_result)
+                        break
+                
+                except Exception as e:
+                    # For other exceptions, log and move on
+                    self.logger.error(
+                        message=f"Error executing step {step.id}: {str(e)}",
+                        agent_id=self.agent_id,
+                        task_id=self.task_id
+                    )
+                    
+                    # Create a failure result
+                    fail_result = StepResult(
+                        step_id=step.id,
+                        success=False,
+                        findings="Step execution failed with an error",
+                        learning="Error handling is important for robustness",
+                        error=str(e)
+                    )
+                    results.append(fail_result)
+                    break
+        
+        # Update state
+        self.state.executed_steps = results
+        self.state.is_complete = (self.state.current_step_index >= len(self.state.plan.steps) - 1)
+        
+        # Log task completion if all steps are done
+        if self.state.is_complete:
+            success_rate = len([r for r in results if r.success]) / len(results) if results else 0
+            self.logger.log_task_completed(
+                agent_id=self.agent_id,
+                task_id=self.task_id,
+                success=success_rate > 0.5,  # Consider success if more than half of steps succeeded
+                result_summary={
+                    "total_steps": len(results),
+                    "successful_steps": len([r for r in results if r.success]),
+                    "success_rate": success_rate
+                }
+            )
+        
+        # Save state after executing steps
+        self.save_state()
+        
+        return results
+    
+    async def run(self, planner_config: Optional[Dict[str, Any]] = None):
+        """
+        Run the full agent workflow: plan generation and execution.
+        
+        Args:
+            planner_config: Configuration for the planner
+        """
+        # Log start of workflow
         self.logger.info(
             message=f"Starting full workflow for task: {self.task}",
             agent_id=self.agent_id,
             task_id=self.task_id
         )
         
-        # Set default planner config if not provided
-        if planner_config is None:
-            planner_config = {"num_steps": 5}
+        # Generate the plan if needed
+        if not self.state.plan:
+            planner_config = planner_config or {}
+            await self.generate_plan_async(**planner_config)
         
-        # Extract planner parameters
-        num_steps = planner_config.get("max_steps", 5)
-        domain = planner_config.get("domain")
+        # Execute each step in the plan
+        await self.execute_all_steps()
         
-        # Generate plan asynchronously
-        plan = await self.generate_plan_async(
-            num_steps=num_steps,
-            domain=domain,
-            additional_context=additional_context,
-            **kwargs
-        )
+        # Ensure all client sessions are properly closed
+        if hasattr(self, "_service") and hasattr(self._service, "_close_session"):
+            try:
+                await self._service._close_session()
+            except Exception as e:
+                self.logger.warning(f"Error closing service session: {str(e)}")
         
-        # Execute plan asynchronously
-        results = await self.execute_plan_async(
-            additional_context=additional_context,
-            **kwargs
-        )
-        
-        # Check execution success
-        successful_steps = len([r for r in results if r.success])
-        success_rate = successful_steps / len(results) if results else 0
-        
-        # Gather all learnings and findings
-        all_learnings = "\n".join([f"- {r.learning}" for r in results if r.success])
-        
-        # Prepare result summary
-        result = {
-            "task": self.task,
-            "plan": plan.to_dict(),
-            "step_results": [r.to_dict() for r in results],
-            "success_rate": success_rate,
-            "is_complete": self.state.is_complete,
-            "summary": {
-                "total_steps": len(results),
-                "successful_steps": successful_steps,
-                "key_learnings": all_learnings
-            }
-        }
-        
-        return result
+        # If the planner has a service, close its session too
+        if hasattr(self, "planner") and hasattr(self.planner, "_service") and hasattr(self.planner._service, "_close_session"):
+            try:
+                await self.planner._service._close_session()
+            except Exception as e:
+                self.logger.warning(f"Error closing planner service session: {str(e)}")
+                
+        # Close any other sessions that might be open
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name)
+            if hasattr(attr, "_close_session") and callable(attr._close_session):
+                try:
+                    await attr._close_session()
+                except Exception as e:
+                    self.logger.warning(f"Error closing session for {attr_name}: {str(e)}")
+                    
+        # Return the state
+        return self.state
     
     def get_available_tools(self) -> List[Tool]:
         """
@@ -924,7 +1048,7 @@ def create_agent(
             service = create_service_for_task(task)
         except:
             # Fall back to default model
-            service = create_openrouter_service(model="deepseek/deepseek-v3-base:free")
+            service = create_openrouter_service(model="google/gemini-2.0-flash-001")
     
     # Create and return the agent
     return Agent(

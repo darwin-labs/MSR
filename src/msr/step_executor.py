@@ -6,6 +6,9 @@ import sys
 import json
 import subprocess
 import tempfile
+import re
+import aiohttp
+import asyncio
 from typing import Dict, List, Optional, Any, Union, Tuple
 from dataclasses import dataclass, field, asdict
 
@@ -105,7 +108,7 @@ class StepExecutor:
             **kwargs: Additional parameters for generation
         """
         # Use Deepseek as default model
-        default_model = model or config_manager.get("EXECUTOR_MODEL", "deepseek/deepseek-v3-base:free")
+        default_model = model or config_manager.get("EXECUTOR_MODEL", "google/gemini-2.0-flash-001")
         
         # Create service if not provided
         self._service = service or create_openrouter_service(model=default_model)
@@ -708,684 +711,438 @@ You'll receive tool results that you can use to update your findings.
         step: ResearchStep,
         research_plan: ResearchPlan,
         previous_results: Optional[List[StepResult]] = None,
+        max_interactions: int = 5,
         additional_context: Optional[str] = None,
-        step_id_for_logs: Optional[str] = None,
-        task_id_for_logs: Optional[str] = None,
+        allow_code_execution: bool = False,
+        allow_command_execution: bool = False,
+        allow_web_search: bool = False,
+        allow_file_operations: bool = False,
+        allow_data_analysis: bool = False,
         agent_id_for_logs: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
+        task_id_for_logs: Optional[str] = None,
+        max_retries: int = 3,
+        retry_delay: float = 2.0, 
+        tools: Optional[List[Union[str, Tool]]] = None,
         **kwargs
     ) -> StepResult:
         """
-        Execute a step of the research plan asynchronously.
+        Execute a single research step.
         
         Args:
-            step: Research step to execute
-            research_plan: The full research plan
-            previous_results: Results from previous steps
-            additional_context: Additional context for execution
-            step_id_for_logs: Optional step ID for logging
-            task_id_for_logs: Optional task ID for logging
-            agent_id_for_logs: Optional agent ID for logging
-            temperature: Temperature for generation
-            max_tokens: Max tokens for generation
-            **kwargs: Additional parameters for generation
+            step: The step to execute
+            research_plan: The overall research plan
+            previous_results: Results from previously executed steps
+            max_interactions: Maximum number of interactions for the step
+            additional_context: Any additional context to provide
+            allow_code_execution: Whether to allow Python code execution
+            allow_command_execution: Whether to allow terminal command execution
+            allow_web_search: Whether to allow web search
+            allow_file_operations: Whether to allow file operations
+            allow_data_analysis: Whether to allow data analysis
+            agent_id_for_logs: Agent ID for logging
+            task_id_for_logs: Task ID for logging
+            max_retries: Maximum number of retry attempts for API calls
+            retry_delay: Initial delay between retries in seconds
+            tools: List of specific tools to enable
+            **kwargs: Additional parameters for execution
             
         Returns:
-            StepResult object with execution results
+            StepResult containing the findings and learnings from the step
         """
-        # Use provided temperature/max_tokens or fall back to defaults
-        temp = temperature if temperature is not None else self.temperature
-        tokens = max_tokens if max_tokens is not None else self.max_tokens
-        
-        # Create prompt for the step execution
-        system_prompt = self._create_step_execution_prompt(
-            step=step,
-            research_plan=research_plan,
-            previous_results=previous_results,
-            additional_context=additional_context
-        )
-        
-        # Create task prompt
-        user_prompt = f"Execute research step {step.id}: {step.title}"
-        
-        # Get tool definitions
-        tools = self._get_tool_definitions()
-        
-        # Initialize execution records
-        code_executions = []
-        command_executions = []
-        web_search_results = []
-        file_operations = []
-        data_analysis_results = []
-        
-        # Initialize step result
-        step_result = StepResult(
-            step_id=step.id,
-            success=False,
-            findings="",
-            learning="",
-            code_executions=code_executions,
-            command_executions=command_executions,
-            artifacts={
-                "web_search_results": web_search_results,
-                "file_operations": file_operations,
-                "data_analysis_results": data_analysis_results
-            }
-        )
-        
         try:
-            # Log step execution
-            if agent_id_for_logs and task_id_for_logs:
-                self.logger.info(
-                    message=f"Executing step: {step.id} - {step.title}",
-                    agent_id=agent_id_for_logs,
-                    task_id=task_id_for_logs,
-                    context={
-                        "step_goal": step.goal,
-                        "prompt_length": len(system_prompt),
-                        "available_tools": self.tools
-                    }
-                )
+            # Set IDs for logging
+            agent_id = agent_id_for_logs
+            task_id = task_id_for_logs
             
-            # Print debug information
+            # Log step execution start
+            self.logger.info(
+                message=f"Executing step: {step.id} - {step.title}",
+                event_type=LogEventType.AGENT_TASK_STARTED,
+                agent_id=agent_id,
+                task_id=task_id
+            )
+            
+            # Print step information
             print(f"\n==== EXECUTING STEP: {step.id} - {step.title} ====")
             print(f"Goal: {step.goal}")
-            print(f"Available tools: {self.tools}")
             
-            # Create messages array
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
+            # Get available tools
+            tool_instances = []
             
-            # Create execution parameters without any JSON-problematic objects
-            execution_params = {
-                "model": self.model_name,  # Use model name string, not the service object
-                "temperature": temp,
-                "max_tokens": tokens
-            }
+            # Figure out which tools to use
+            if tools is not None:
+                # If specific tools are provided, use those
+                for tool in tools:
+                    if isinstance(tool, str):
+                        if tool.lower() in ["python", "code"]:
+                            allow_code_execution = True
+                        elif tool.lower() in ["terminal", "command", "shell"]:
+                            allow_command_execution = True
+                        elif tool.lower() in ["web", "search"]:
+                            allow_web_search = True
+                        elif tool.lower() in ["file"]:
+                            allow_file_operations = True
+                        elif tool.lower() in ["data", "analysis"]:
+                            allow_data_analysis = True
+                    elif isinstance(tool, Tool):
+                        tool_instances.append(tool)
             
-            # Only add tools parameter if we have tools defined
-            if tools:
-                execution_params["tools"] = tools
-                
-            # Filter kwargs to remove any non-serializable objects
-            filtered_kwargs = {}
-            for key, value in kwargs.items():
-                if isinstance(value, (str, int, float, bool, list, dict)) or value is None:
-                    filtered_kwargs[key] = value
-            
-            # Add filtered kwargs to execution params
-            execution_params.update(filtered_kwargs)
-            
-            # Continue conversation until step is complete or max iterations reached
-            max_iterations = 5
-            current_iteration = 0
-            final_result = None
-            
-            while current_iteration < max_iterations:
-                current_iteration += 1
-                print(f"\n--- Interaction {current_iteration}/{max_iterations} ---")
-                
-                # Call LLM to execute the step with safe parameters
-                response = await self._service.generate_chat_response(
-                    messages=messages,
-                    **execution_params
-                )
-                
-                # Print the raw response for debugging
-                print("\n--- RAW LLM RESPONSE ---")
-                print(json.dumps(response, indent=2, default=str))
-                print("------------------------")
-                
-                # Extract assistant's message
-                assistant_message = None
-                if "choices" in response and len(response["choices"]) > 0:
-                    assistant_message = response["choices"][0]["message"]
-                
-                if not assistant_message:
-                    raise ValueError("Empty response from LLM")
-                
-                # Print assistant's message for debugging
-                print("\n--- ASSISTANT MESSAGE ---")
-                print(json.dumps(assistant_message, indent=2, default=str))
-                print("--------------------------")
-                
-                # Add assistant's message to conversation
-                messages.append(assistant_message)
-                
-                # Check if the assistant wants to use a tool
-                tool_calls = assistant_message.get("tool_calls", [])
-                
-                if not tool_calls:
-                    # No tool calls, this is the final response
-                    final_result = assistant_message
-                    break
-                
-                # Process tool calls
-                for tool_call in tool_calls:
-                    # Extract tool call information
-                    if tool_call.get("type") == "function":
-                        function_call = tool_call.get("function", {})
-                        tool_name = function_call.get("name")
-                        tool_args_str = function_call.get("arguments", "{}")
-                        tool_args = json.loads(tool_args_str)
-                        
-                        # Print tool call for debugging
-                        print(f"\n--- TOOL CALL: {tool_name} ---")
-                        print(f"Arguments: {json.dumps(tool_args, indent=2)}")
-                        
-                        # Execute the tool
-                        tool_result = await self._execute_tool(tool_name, tool_args)
-                        
-                        # Print tool result for debugging
-                        print(f"\n--- TOOL RESULT ---")
-                        print(json.dumps(tool_result, indent=2))
-                        print("-------------------")
-                        
-                        # Record tool execution based on tool type
-                        if tool_name == "python_execution":
-                            code_executions.append({
-                                "code": tool_args.get("code", ""),
-                                "output": tool_result.get("output", ""),
-                                "success": tool_result.get("success", False),
-                                "error": tool_result.get("error"),
-                                "description": tool_args.get("description", "")
-                            })
-                        elif tool_name == "terminal_command":
-                            command_executions.append({
-                                "command": tool_args.get("command", ""),
-                                "stdout": tool_result.get("stdout", ""),
-                                "stderr": tool_result.get("stderr", ""),
-                                "exit_code": tool_result.get("exit_code", 1),
-                                "success": tool_result.get("success", False),
-                                "description": tool_args.get("description", "")
-                            })
-                        elif tool_name == "web_search":
-                            web_search_results.append({
-                                "query": tool_args.get("query", ""),
-                                "results": tool_result.get("results", "")
-                            })
-                        elif tool_name == "file_operation":
-                            file_operations.append({
-                                "operation": tool_args.get("operation", ""),
-                                "path": tool_args.get("path", ""),
-                                "success": tool_result.get("success", False),
-                                "error": tool_result.get("error")
-                            })
-                        elif tool_name == "data_analysis":
-                            data_analysis_results.append({
-                                "code": tool_args.get("code", ""),
-                                "output": tool_result.get("output", ""),
-                                "success": tool_result.get("success", False),
-                                "error": tool_result.get("error"),
-                                "description": tool_args.get("description", "")
-                            })
-                        
-                        # Add tool result to messages
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id"),
-                            "name": tool_name,
-                            "content": json.dumps(tool_result)
-                        })
-            
-            # If we didn't get a final result, use the last message
-            if not final_result and messages:
-                for message in reversed(messages):
-                    if message.get("role") == "assistant":
-                        final_result = message
-                        break
-            
-            if not final_result:
-                raise ValueError("No final result from LLM")
-            
-            # Extract the content from the final result
-            content = final_result.get("content", "")
-            
-            # Print final content for debugging
-            print("\n--- FINAL CONTENT ---")
-            print(content)
-            print("---------------------")
-            
-            # Try to parse JSON from content
-            try:
-                # Check if it's already a JSON object
-                if isinstance(content, dict):
-                    result_data = content
-                else:
-                    # Try to extract JSON from the text
-                    json_match = None
-                    if "```json" in content:
-                        parts = content.split("```json")
-                        if len(parts) > 1:
-                            json_block = parts[1].split("```")[0].strip()
-                            json_match = json.loads(json_block)
-                            print("\n--- JSON BLOCK EXTRACTED FROM ```json CODE BLOCK ---")
-                            print(json_block)
-                    elif content.strip().startswith("{") and content.strip().endswith("}"):
-                        json_match = json.loads(content)
-                        print("\n--- JSON PARSED FROM RAW CONTENT ---")
-                        print(content)
-                    
-                    if json_match:
-                        result_data = json_match
-                        print("\n--- PARSED JSON RESULT ---")
-                        print(json.dumps(result_data, indent=2))
-                    else:
-                        # Fall back to parsing with our text extraction method
-                        result_data = self._parse_step_result(content, step.id)
-                        print("\n--- TEXT PARSED RESULT ---")
-                        print(json.dumps(result_data, indent=2))
-            except Exception as e:
-                print(f"\n--- JSON PARSING ERROR ---")
-                print(f"Error: {str(e)}")
-                result_data = self._parse_step_result(content, step.id)
-                print("\n--- FALLBACK TEXT PARSED RESULT ---")
-                print(json.dumps(result_data, indent=2))
-            
-            # Update the step result
-            step_result.success = result_data.get("success", False)
-            step_result.findings = result_data.get("findings", "")
-            step_result.learning = result_data.get("learning", "")
-            step_result.next_steps = result_data.get("next_steps", [])
-            
-            # Print the results
-            print(f"\n==== STEP EXECUTION RESULTS ====")
-            print(f"Success: {step_result.success}")
-            print(f"Findings: {step_result.findings[:200]}..." if len(step_result.findings) > 200 else f"Findings: {step_result.findings}")
-            print(f"Learning: {step_result.learning}")
-            print(f"Next Steps: {step_result.next_steps}")
-            print("================================\n")
-            
-            # Log completion
-            if agent_id_for_logs and task_id_for_logs:
-                self.logger.info(
-                    message=f"Step {step.id} execution completed",
-                    agent_id=agent_id_for_logs,
-                    task_id=task_id_for_logs,
-                    context={
-                        "success": step_result.success,
-                        "findings_length": len(step_result.findings),
-                        "learning_length": len(step_result.learning),
-                        "tools_used": {
-                            "code": len(code_executions),
-                            "commands": len(command_executions),
-                            "web_searches": len(web_search_results),
-                            "file_operations": len(file_operations),
-                            "data_analyses": len(data_analysis_results)
-                        }
-                    }
-                )
-            
-            # Add to execution history
-            self.execution_history.append(step_result)
-            
-            # Return the result
-            return step_result
-                
-        except Exception as e:
-            error_msg = f"Error during step execution: {str(e)}"
-            self.logger.error(
-                message=error_msg,
-                event_type=LogEventType.ERROR
-            )
-            
-            # Print error
-            print(f"\n==== ERROR IN STEP EXECUTION ====")
-            print(error_msg)
-            print("================================\n")
-            
-            # Update step result with error
-            step_result.success = False
-            step_result.error = error_msg
-            
-            # Add to execution history
-            self.execution_history.append(step_result)
-            
-            return step_result
-    
-    def execute_step(
-        self,
-        step: ResearchStep,
-        research_plan: ResearchPlan,
-        previous_results: Optional[List[StepResult]] = None,
-        additional_context: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        **kwargs
-    ) -> StepResult:
-        """
-        Execute a research step (synchronous wrapper).
-        
-        Args:
-            step: The research step to execute
-            research_plan: The overall research plan
-            previous_results: Results from previous steps (optional)
-            additional_context: Any additional context (optional)
-            temperature: Temperature for generation (overrides default)
-            max_tokens: Max tokens for generation (overrides default)
-            **kwargs: Additional parameters for generation
-            
-        Returns:
-            A StepResult object containing the execution results
-        """
-        import asyncio
-        
-        # Run the async function in a new event loop
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(
-                self.execute_step_async(
-                    step=step,
-                    research_plan=research_plan,
-                    previous_results=previous_results,
-                    additional_context=additional_context,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    **kwargs
-                )
-            )
-        finally:
-            loop.close()
-    
-    async def execute_plan_async(
-        self,
-        research_plan: ResearchPlan,
-        additional_context: Optional[str] = None,
-        agent_id_for_logs: Optional[str] = None,
-        task_id_for_logs: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        **kwargs
-    ) -> List[StepResult]:
-        """
-        Execute all steps in a research plan, respecting dependencies.
-        
-        Args:
-            research_plan: The research plan to execute
-            additional_context: Any additional context (optional)
-            agent_id_for_logs: Agent ID for logging (optional)
-            task_id_for_logs: Task ID for logging (optional)
-            temperature: Temperature for generation (overrides default)
-            max_tokens: Max tokens for generation (overrides default)
-            **kwargs: Additional parameters for generation
-            
-        Returns:
-            List of StepResult objects for all executed steps
-        """
-        # Set IDs for logging
-        agent_id = agent_id_for_logs
-        task_id = task_id_for_logs
-        
-        self.logger.info(
-            message=f"Executing research plan: {research_plan.title}",
-            event_type=LogEventType.PLAN_GENERATION_COMPLETED,
-            agent_id=agent_id,
-            task_id=task_id,
-            context={
-                "steps_count": len(research_plan.steps),
-                "objective": research_plan.objective
-            }
-        )
-        
-        # Reset execution history
-        self.execution_history = []
-        
-        # Track completed steps by ID
-        completed_steps: Dict[str, StepResult] = {}
-        
-        # Process steps in order, respecting dependencies
-        for step in research_plan.steps:
-            # Check if all dependencies are completed
-            if not all(dep_id in completed_steps for dep_id in step.dependencies):
-                self.logger.warning(
-                    message=f"Skipping step {step.id} due to missing dependencies",
-                    event_type=LogEventType.STEP_EXECUTION_STARTED,
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    context={
-                        "step_id": step.id,
-                        "dependencies": step.dependencies,
-                        "completed_steps": list(completed_steps.keys())
-                    }
-                )
-                
-                # Store as failed result if dependencies are not met
-                error_result = StepResult(
-                    step_id=step.id,
-                    success=False,
-                    findings="Cannot execute step because dependencies are not satisfied",
-                    learning="Ensure proper dependency resolution in research plan",
-                    error="Missing dependencies"
-                )
-                self.execution_history.append(error_result)
-                completed_steps[step.id] = error_result
-                continue
-            
-            # Get results from dependencies
-            dependency_results = [completed_steps[dep_id] for dep_id in step.dependencies]
-            
-            # Execute the step
-            result = await self.execute_step_async(
+            # Create prompt for step execution
+            prompt, tool_definitions = self._create_step_execution_prompt(
                 step=step,
                 research_plan=research_plan,
-                previous_results=dependency_results if dependency_results else None,
-                additional_context=additional_context,
-                agent_id_for_logs=agent_id,
-                task_id_for_logs=task_id,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **kwargs
+                previous_results=previous_results,
+                additional_context=additional_context
             )
             
-            # Store the result
-            completed_steps[step.id] = result
-        
-        self.logger.info(
-            message=f"Research plan execution completed with {len([r for r in self.execution_history if r.success])}/{len(self.execution_history)} successful steps",
-            event_type=LogEventType.PLAN_GENERATION_COMPLETED,
-            agent_id=agent_id,
-            task_id=task_id
-        )
-        
-        return self.execution_history
-
-    def _extract_code_blocks(self, content: str) -> List[Dict[str, str]]:
-        """
-        Extract code blocks from a string.
-        
-        Args:
-            content: Text content containing code blocks
+            # Configure the tools allowed
+            active_tools = []
+            if allow_code_execution:
+                active_tools.append("python_code")
+                print("🐍 Enabled Python code execution")
+            if allow_command_execution:
+                active_tools.append("terminal_command")
+                print("🖥️ Enabled terminal command execution")
+            if allow_web_search:
+                active_tools.append("web_search")
+                print("🔍 Enabled web search")
+            if allow_file_operations:
+                active_tools.append("file_operations")
+                print("📁 Enabled file operations")
+            if allow_data_analysis:
+                active_tools.append("data_analysis")
+                print("📊 Enabled data analysis")
             
-        Returns:
-            List of extracted code blocks with type and code
-        """
-        blocks = []
-        lines = content.split('\n')
-        
-        in_block = False
-        current_block = {"type": "", "code": "", "description": ""}
-        block_description = ""
-        
-        for line in lines:
-            # Check for block start
-            if not in_block and "```" in line:
-                in_block = True
-                block_type = line.replace("```", "").strip().lower()
-                if block_type:
-                    current_block["type"] = block_type
+            print(f"Available tools: {active_tools}")
+            
+            # Initialize variables to track execution
+            interactions = 0
+            findings = ""
+            learning = ""
+            next_steps = []
+            success = False
+            all_tool_calls = []
+            
+            # Get model parameters with defaults from adapter
+            params = {
+                "temperature": kwargs.get("temperature", self.temperature),
+                "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            }
+            
+            # Override with any function-specific kwargs
+            for key, value in kwargs.items():
+                if key not in ["temperature", "max_tokens"]:
+                    params[key] = value
+            
+            # Add the tool definitions if we have any active tools
+            if active_tools:
+                params["tools"] = self._get_tool_definitions()
+            
+            # Main interaction loop
+            retry_count = 0
+            while interactions < max_interactions:
+                interactions += 1
+                
+                # Format the user message for this interaction
+                if interactions == 1:
+                    # First interaction: provide the task
+                    user_message = "Execute this research step and provide findings."
                 else:
-                    current_block["type"] = "code"  # Default block type
+                    # Subsequent interactions: continue from previous context
+                    user_message = "Continue working on this step based on the results so far."
                 
-                # Look for description in previous lines
-                if block_description:
-                    current_block["description"] = block_description
-                
-                continue
-            
-            # Check for block end
-            if in_block and "```" in line:
-                in_block = False
-                blocks.append(current_block)
-                current_block = {"type": "", "code": "", "description": ""}
-                block_description = ""
-                continue
-            
-            # Collect code if inside a block
-            if in_block:
-                current_block["code"] += line + "\n"
-            # Collect potential description before a code block
-            elif not in_block and line.strip():
-                block_description = line.strip()
-        
-        # Clean up code blocks
-        for block in blocks:
-            block["code"] = block["code"].strip()
-        
-        return blocks
-    
-    def _parse_step_result(self, content: str, step_id: str) -> Dict[str, Any]:
-        """
-        Parse the step execution result from the LLM output.
-        
-        Args:
-            content: LLM output content
-            step_id: ID of the step being executed
-            
-        Returns:
-            Dictionary with parsed findings, learnings, success, next steps
-        """
-        result = {
-            "success": False,
-            "findings": "",
-            "learning": "",
-            "next_steps": []
-        }
-        
-        # Try to find structured data in content
-        try:
-            # Look for JSON block first
-            json_match = None
-            if "```json" in content:
-                parts = content.split("```json")
-                if len(parts) > 1:
-                    json_block = parts[1].split("```")[0].strip()
-                    json_match = json.loads(json_block)
-            elif "```" in content:
-                # Try to find any code block that might contain JSON
-                blocks = self._extract_code_blocks(content)
-                for block in blocks:
-                    try:
-                        json_match = json.loads(block["code"])
-                        if isinstance(json_match, dict):
-                            break
-                    except:
-                        continue
-            
-            # If we found JSON, extract fields
-            if json_match and isinstance(json_match, dict):
-                result["findings"] = json_match.get("findings", "")
-                result["learning"] = json_match.get("learning", "")
-                result["success"] = json_match.get("success", False)
-                result["next_steps"] = json_match.get("next_steps", [])
-                return result
-        except:
-            # If JSON parsing failed, continue with text parsing
-            pass
-        
-        # Try to extract structured information from text
-        sections = {
-            "findings": ["findings:", "results:", "observations:"],
-            "learning": ["learning:", "learnings:", "lessons:", "what we learned:"],
-            "success": ["success:", "successful:"],
-            "next_steps": ["next steps:", "next:", "future work:", "what's next:"]
-        }
-        
-        # Split content into lines for analysis
-        lines = content.split('\n')
-        current_section = None
-        
-        for line in lines:
-            line_lower = line.lower().strip()
-            
-            # Check if line starts a new section
-            found_section = False
-            for section, markers in sections.items():
-                for marker in markers:
-                    if line_lower.startswith(marker):
-                        current_section = section
-                        # Extract content after the marker
-                        section_content = line[len(marker):].strip()
-                        
-                        # Special handling for success section
-                        if section == "success":
-                            result[section] = "yes" in section_content.lower() or "true" in section_content.lower()
-                        # Special handling for next steps as a list
-                        elif section == "next_steps" and section_content:
-                            if not result[section]:
-                                result[section] = []
-                            result[section].append(section_content)
-                        # For other sections, start collecting content
-                        elif section_content:
-                            if result[section]:
-                                result[section] += "\n" + section_content
+                try:
+                    # Create messages for this interaction
+                    messages = [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": user_message}
+                    ]
+                    
+                    # Make API call with retry logic for connection errors
+                    retry_attempt = 0
+                    while True:
+                        try:
+                            response = await self._service.generate_chat_response(
+                                messages=messages,
+                                **params
+                            )
+                            break  # Exit retry loop if successful
+                            
+                        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                            # Handle connection errors with retries
+                            error_type = type(e).__name__
+                            retry_attempt += 1
+                            
+                            # Log the error
+                            self.logger.error(
+                                f"Connection error ({error_type}) in LLM call for step {step.id} (attempt {retry_attempt}/{max_retries}): {str(e)}"
+                            )
+                            
+                            if retry_attempt < max_retries:
+                                # Wait with exponential backoff
+                                wait_time = retry_delay * (2 ** retry_attempt)
+                                self.logger.info(f"Retrying LLM call in {wait_time:.1f} seconds...")
+                                await asyncio.sleep(wait_time)
                             else:
-                                result[section] = section_content
+                                # Max retries exceeded
+                                self.logger.error(f"Max retries ({max_retries}) exceeded for LLM call")
+                                raise
+                    
+                    # Print debug info for raw response
+                    print(f"\n--- Interaction {interactions}/{max_interactions} ---\n")
+                    print("--- RAW LLM RESPONSE ---")
+                    print(json.dumps(response, indent=2))
+                    print("------------------------")
+                    
+                    # Extract assistant message
+                    if "choices" in response and len(response["choices"]) > 0:
+                        assistant_message = response["choices"][0]["message"]
                         
-                        found_section = True
+                        # Print assistant message for debugging
+                        print("\n--- ASSISTANT MESSAGE ---")
+                        print(json.dumps(assistant_message, indent=2))
+                        print("--------------------------")
+                        
+                        content = assistant_message.get("content", "")
+                        tool_calls = assistant_message.get("tool_calls", [])
+                        
+                        print("\n--- FINAL CONTENT ---")
+                        print(content)
+                        print("---------------------")
+                        
+                        # Execute any tool calls
+                        if tool_calls:
+                            for tool_call in tool_calls:
+                                # Extract tool call info
+                                function = tool_call.get("function", {})
+                                tool_name = function.get("name", "")
+                                arguments_str = function.get("arguments", "{}")
+                                
+                                try:
+                                    # Parse arguments
+                                    arguments = json.loads(arguments_str)
+                                    
+                                    # Log tool call
+                                    print(f"\n--- TOOL CALL: {tool_name} ---")
+                                    print(f"Arguments: {json.dumps(arguments, indent=2)}")
+                                    
+                                    # Execute the tool
+                                    tool_result = await self._execute_tool(
+                                        tool_name=tool_name,
+                                        arguments=arguments,
+                                        allow_code_execution=allow_code_execution,
+                                        allow_command_execution=allow_command_execution,
+                                        allow_web_search=allow_web_search,
+                                        allow_file_operations=allow_file_operations,
+                                        allow_data_analysis=allow_data_analysis
+                                    )
+                                    
+                                    # Log result
+                                    print(f"Result: {tool_result}\n")
+                                    
+                                    # Add tool call to history
+                                    all_tool_calls.append({
+                                        "tool": tool_name,
+                                        "args": arguments,
+                                        "result": tool_result
+                                    })
+                                    
+                                    # Add tool result to messages for context
+                                    messages.append({
+                                        "role": "assistant",
+                                        "content": None,
+                                        "tool_calls": [tool_call]
+                                    })
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tool_call.get("id", ""),
+                                        "content": str(tool_result)
+                                    })
+                                    
+                                except Exception as e:
+                                    # Log tool execution error
+                                    error_msg = f"Error executing tool {tool_name}: {str(e)}"
+                                    self.logger.error(error_msg)
+                                    print(f"Error: {error_msg}")
+                                    
+                                    # Add error message as tool result
+                                    messages.append({
+                                        "role": "assistant",
+                                        "content": None,
+                                        "tool_calls": [tool_call]
+                                    })
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tool_call.get("id", ""),
+                                        "content": f"Error: {str(e)}"
+                                    })
+                            
+                            # Get a new response after tool execution
+                            # Use retry logic for connection errors
+                            retry_attempt = 0
+                            while True:
+                                try:
+                                    response = await self._service.generate_chat_response(
+                                        messages=messages,
+                                        **params
+                                    )
+                                    break  # Exit retry loop if successful
+                                    
+                                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                                    # Handle connection errors with retries
+                                    error_type = type(e).__name__
+                                    retry_attempt += 1
+                                    
+                                    # Log the error
+                                    self.logger.error(
+                                        f"Connection error ({error_type}) in follow-up LLM call (attempt {retry_attempt}/{max_retries}): {str(e)}"
+                                    )
+                                    
+                                    if retry_attempt < max_retries:
+                                        # Wait with exponential backoff
+                                        wait_time = retry_delay * (2 ** retry_attempt)
+                                        self.logger.info(f"Retrying follow-up LLM call in {wait_time:.1f} seconds...")
+                                        await asyncio.sleep(wait_time)
+                                    else:
+                                        # Max retries exceeded
+                                        self.logger.error(f"Max retries ({max_retries}) exceeded for follow-up LLM call")
+                                        raise
+                            
+                            # Extract content from the new response
+                            if "choices" in response and len(response["choices"]) > 0:
+                                content = response["choices"][0]["message"].get("content", "")
+                                print("\n--- FINAL CONTENT AFTER TOOL CALLS ---")
+                                print(content)
+                                print("-------------------------------------")
+                        
+                        # Try to parse the content as JSON to extract results
+                        try:
+                            # First check if the entire content is a JSON object
+                            try:
+                                parsed_json = json.loads(content)
+                                print("\n--- JSON PARSED RESULT ---")
+                                print(json.dumps(parsed_json, indent=2))
+                                
+                                # Extract results from parsed JSON
+                                if isinstance(parsed_json, dict):
+                                    if "findings" in parsed_json:
+                                        findings = parsed_json.get("findings", "")
+                                    if "learning" in parsed_json:
+                                        learning = parsed_json.get("learning", "")
+                                    if "next_steps" in parsed_json:
+                                        next_steps = parsed_json.get("next_steps", [])
+                                    if "success" in parsed_json:
+                                        success = parsed_json.get("success", False)
+                            
+                            except json.JSONDecodeError:
+                                # If the content is not a JSON object, try to extract JSON from a code block
+                                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
+                                if json_match:
+                                    try:
+                                        parsed_json = json.loads(json_match.group(1))
+                                        print("\n--- JSON BLOCK EXTRACTED FROM ```json CODE BLOCK ---")
+                                        print(json_match.group(1))
+                                        print("\n--- PARSED JSON RESULT ---")
+                                        print(json.dumps(parsed_json, indent=2))
+                                        
+                                        # Extract results from parsed JSON
+                                        if isinstance(parsed_json, dict):
+                                            if "findings" in parsed_json:
+                                                findings = parsed_json.get("findings", "")
+                                            if "learning" in parsed_json:
+                                                learning = parsed_json.get("learning", "")
+                                            if "next_steps" in parsed_json:
+                                                next_steps = parsed_json.get("next_steps", [])
+                                            if "success" in parsed_json:
+                                                success = parsed_json.get("success", False)
+                                    except json.JSONDecodeError as e:
+                                        print(f"Error parsing JSON from code block: {e}")
+                                else:
+                                    # If we couldn't find a JSON code block, use text parsing as fallback
+                                    print("\n--- TEXT PARSED RESULT ---")
+                                    parsed_text = {
+                                        "success": "success" in content.lower() and "fail" not in content.lower(),
+                                        "findings": content,
+                                        "learning": "Learned information about this research step.",
+                                        "next_steps": []
+                                    }
+                                    print(json.dumps(parsed_text, indent=2))
+                                    
+                                    # Extract results from text parsing
+                                    findings = parsed_text["findings"]
+                                    learning = parsed_text["learning"]
+                                    success = parsed_text["success"]
+                        
+                        except Exception as e:
+                            self.logger.error(f"Error parsing result: {str(e)}")
+                            print(f"Error parsing result: {str(e)}")
+                            
+                            # Use the raw content as findings
+                            findings = content
+                            learning = "Error parsing the structured output."
+                            success = False
+                    
+                    # Check if we have enough information to complete the step
+                    if findings and (success or interactions >= max_interactions):
                         break
-                if found_section:
-                    break
+                
+                except Exception as e:
+                    self.logger.error(f"Error in step execution: {str(e)}")
+                    print(f"Error in step execution: {str(e)}")
+                    
+                    # If we've reached max retries, create an error result
+                    if retry_count >= max_retries:
+                        return StepResult(
+                            step_id=step.id,
+                            success=False,
+                            findings=f"Error executing step: {str(e)}",
+                            learning="Error handling is important for robust research workflows.",
+                            error=str(e),
+                            tool_calls=all_tool_calls
+                        )
+                    
+                    # Otherwise, increment retry count and continue
+                    retry_count += 1
+                    
+                    # Wait with exponential backoff
+                    wait_time = retry_delay * (2 ** retry_count)
+                    self.logger.info(f"Retrying step execution in {wait_time:.1f} seconds...")
+                    await asyncio.sleep(wait_time)
             
-            # If not a section header and we're in a section, append content
-            if not found_section and current_section and line.strip():
-                if current_section == "next_steps":
-                    # Check if it's a list item
-                    if line.strip().startswith("- ") or line.strip().startswith("* "):
-                        result[current_section].append(line.strip()[2:])
-                    elif line.strip().startswith("1. ") or line.strip().startswith("2. "):
-                        result[current_section].append(line.strip()[3:])
-                    else:
-                        # Append to the last next step
-                        if result[current_section] and len(result[current_section]) > 0:
-                            result[current_section][-1] += " " + line.strip()
-                else:
-                    if result[current_section]:
-                        result[current_section] += "\n" + line.strip()
-                    else:
-                        result[current_section] = line.strip()
+            # Create step result
+            result = StepResult(
+                step_id=step.id,
+                success=success,
+                findings=findings,
+                learning=learning,
+                next_steps=next_steps,
+                tool_calls=all_tool_calls
+            )
+            
+            # Print execution results
+            print("\n==== STEP EXECUTION RESULTS ====")
+            print(f"Success: {result.success}")
+            print(f"Findings: {result.findings[:120]}...")
+            print(f"Learning: {result.learning}")
+            print(f"Next Steps: {result.next_steps}")
+            print("================================\n")
+            
+            return result
         
-        # If no structured data was found, use the whole content as findings
-        if not result["findings"]:
-            result["findings"] = content
-        
-        # If no explicit success indicator, default to True
-        if not result.get("success", None):
-            # Look for failure indicators
-            failure_indicators = ["error", "fail", "unsuccessful", "didn't work", "did not work"]
-            for indicator in failure_indicators:
-                if indicator in content.lower():
-                    result["success"] = False
-                    break
-            else:
-                result["success"] = True
-        
-        # Default empty learning if none found
-        if not result["learning"]:
-            # Try to derive learning from findings
-            if result["findings"]:
-                result["learning"] = "Learned information about this research step."
-        
-        # Ensure next_steps is a list
-        if not isinstance(result["next_steps"], list):
-            if result["next_steps"]:
-                result["next_steps"] = [result["next_steps"]]
-            else:
-                result["next_steps"] = []
-        
-        return result
+        finally:
+            # Ensure any sessions created during step execution are properly closed
+            if hasattr(self, "_service") and hasattr(self._service, "_close_session"):
+                try:
+                    await self._service._close_session()
+                except Exception as e:
+                    self.logger.warning(f"Error closing service session: {str(e)}")
+                    
+            # Close any sessions from tools
+            if hasattr(self, "web_search_tool") and hasattr(self.web_search_tool, "_close_session"):
+                try:
+                    await self.web_search_tool._close_session()
+                except Exception as e:
+                    self.logger.warning(f"Error closing web search tool session: {str(e)}")
 
 
 # Convenience function to create a step executor

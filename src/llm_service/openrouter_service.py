@@ -7,6 +7,7 @@ import json
 import aiohttp
 from typing import Dict, List, Optional, Any, Union
 import logging
+import asyncio
 
 from src.llm_service.base_service import LLMService
 from src.utils.config import config_manager
@@ -138,6 +139,8 @@ class OpenRouterService(LLMService):
         model: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         response_format: Optional[Dict[str, str]] = None,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -150,6 +153,8 @@ class OpenRouterService(LLMService):
             model: Model to use (default: self.default_model)
             tools: List of tool definitions for function calling
             response_format: Format specification for the response (e.g., {"type": "json_object"})
+            max_retries: Maximum number of retry attempts for failed requests (default: 3)
+            retry_delay: Delay between retry attempts in seconds (default: 2.0)
             **kwargs: Additional generation parameters
             
         Returns:
@@ -184,25 +189,74 @@ class OpenRouterService(LLMService):
                 continue
             payload[key] = value
         
-        try:
-            # Make API call
-            async with self._session.post(
-                OPENROUTER_CHAT_ENDPOINT,
-                headers=self._get_headers(),
-                json=payload
-            ) as response:
-                # Check for errors
-                if response.status >= 400:
-                    error_text = await response.text()
-                    logger.error(f"OpenRouter API error: {error_text}")
-                    raise ValueError(f"OpenRouter API error: {error_text}")
-                
-                # Parse and return response
-                return await response.json()
+        # Initialize retry counter
+        retry_count = 0
+        last_error = None
         
-        except Exception as e:
-            logger.error(f"Error in OpenRouter API call: {str(e)}")
-            raise
+        while retry_count <= max_retries:
+            try:
+                # Make API call
+                async with self._session.post(
+                    OPENROUTER_CHAT_ENDPOINT,
+                    headers=self._get_headers(),
+                    json=payload,
+                    timeout=60  # Set a reasonable timeout
+                ) as response:
+                    # Check for errors
+                    if response.status >= 400:
+                        error_text = await response.text()
+                        error_msg = f"OpenRouter API error: {error_text}"
+                        logger.error(error_msg)
+                        
+                        # Log the failed request details
+                        logger.error(f"Failed request details: model={model_name}, max_tokens={max_tokens}, temperature={temperature}")
+                        
+                        # For certain errors, retry might not help, so raise immediately
+                        if response.status == 401:  # Unauthorized
+                            raise ValueError(error_msg)
+                        
+                        # For other errors, will retry
+                        last_error = ValueError(error_msg)
+                        raise last_error
+                    
+                    # Parse and return response
+                    return await response.json()
+            
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                error_type = type(e).__name__
+                logger.error(f"Connection error ({error_type}) in OpenRouter API call (attempt {retry_count+1}/{max_retries+1}): {str(e)}")
+                logger.error(f"Failed request details: model={model_name}, max_tokens={max_tokens}, temperature={temperature}")
+                
+                if retry_count < max_retries:
+                    # Exponential backoff: wait longer after each retry
+                    wait_time = retry_delay * (2 ** retry_count)
+                    logger.info(f"Retrying in {wait_time:.1f} seconds...")
+                    await asyncio.sleep(wait_time)
+                    retry_count += 1
+                else:
+                    logger.error(f"Max retries ({max_retries}) exceeded. Giving up.")
+                    # Re-raise the last error
+                    raise
+            
+            except Exception as e:
+                last_error = e
+                logger.error(f"Error in OpenRouter API call: {str(e)}")
+                logger.error(f"Failed request details: model={model_name}, max_tokens={max_tokens}, temperature={temperature}")
+                
+                if retry_count < max_retries:
+                    # Only retry certain types of exceptions that might be temporary
+                    if isinstance(e, (ValueError, json.JSONDecodeError)):
+                        wait_time = retry_delay * (2 ** retry_count)
+                        logger.info(f"Retrying in {wait_time:.1f} seconds...")
+                        await asyncio.sleep(wait_time)
+                        retry_count += 1
+                    else:
+                        # Don't retry for other exceptions
+                        raise
+                else:
+                    logger.error(f"Max retries ({max_retries}) exceeded. Giving up.")
+                    raise
     
     async def get_available_models_async(self) -> List[Dict[str, Any]]:
         """
@@ -245,8 +299,6 @@ class OpenRouterService(LLMService):
         Returns:
             List of model identifiers
         """
-        import asyncio
-        
         # Run the async function in a new event loop
         loop = asyncio.new_event_loop()
         try:
