@@ -9,7 +9,7 @@ import tempfile
 import re
 import aiohttp
 import asyncio
-from typing import Dict, List, Optional, Any, Union, Tuple
+from typing import Dict, List, Optional, Any, Union, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field, asdict
 
 # Add parent directory to path if needed
@@ -19,6 +19,10 @@ from src.llm_service.openrouter_service import OpenRouterService, create_openrou
 from src.utils.config import config_manager
 from src.msr.planner_llm import ResearchPlan, ResearchStep
 from src.msr.logger import get_logger, LogEventType
+
+# Handle circular imports
+if TYPE_CHECKING:
+    from src.msr.agent import Tool
 
 
 @dataclass
@@ -722,7 +726,7 @@ You'll receive tool results that you can use to update your findings.
         task_id_for_logs: Optional[str] = None,
         max_retries: int = 3,
         retry_delay: float = 2.0, 
-        tools: Optional[List[Union[str, Tool]]] = None,
+        tools: Optional[List[Union[str, "Tool"]]] = None,
         **kwargs
     ) -> StepResult:
         """
@@ -784,7 +788,8 @@ You'll receive tool results that you can use to update your findings.
                             allow_file_operations = True
                         elif tool.lower() in ["data", "analysis"]:
                             allow_data_analysis = True
-                    elif isinstance(tool, Tool):
+                    else:
+                        # For non-string tools (assumed to be Tool objects)
                         tool_instances.append(tool)
             
             # Create prompt for step execution
