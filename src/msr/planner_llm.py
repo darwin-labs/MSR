@@ -238,8 +238,8 @@ Research Prompt: {prompt}"""
         
         # Set format to JSON to help models return well-structured JSON
         # Some providers (e.g., Groq) don't support response_format
-        model_provider = model or self.model_name
-        if not model_provider or not any(provider in model_provider.lower() for provider in ["groq"]):
+        current_model = params.get("model") or self.model_name
+        if not current_model or not any(provider in current_model.lower() for provider in ["groq"]):
             params["response_format"] = {"type": "json_object"}
         
         # Create chat messages
