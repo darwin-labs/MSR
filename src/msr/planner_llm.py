@@ -258,6 +258,29 @@ Research Prompt: {prompt}"""
                 
                 print("Planning LLM response:", content)
                 
+                # Handle empty response content
+                if not content or content.strip() == "":
+                    print("Warning: Received empty content from LLM, trying again with explicit JSON instructions")
+                    
+                    # Try again with more explicit JSON instructions
+                    messages = [
+                        {"role": "system", "content": planning_prompt + "\n\nVERY IMPORTANT: You MUST return a valid JSON object with the structure specified above."},
+                        {"role": "user", "content": "Generate a detailed research plan in JSON format for this task. RESPOND ONLY WITH JSON."}
+                    ]
+                    
+                    # Make second API call with more explicit instructions
+                    response = await self._service.generate_chat_response(
+                        messages=messages,
+                        **params
+                    )
+                    
+                    # Extract content again
+                    if "choices" in response and len(response["choices"]) > 0:
+                        content = response["choices"][0]["message"]["content"]
+                        print("Second attempt LLM response:", content)
+                    else:
+                        content = ""
+                
                 # Parse JSON content
                 try:
                     # Sometimes the LLM might return markdown-formatted JSON
@@ -270,6 +293,43 @@ Research Prompt: {prompt}"""
                     else:
                         # Use content as is
                         json_content = content
+                    
+                    # If content is still empty, create a minimal default plan
+                    if not json_content or json_content.strip() == "":
+                        print("Warning: Still received empty content from LLM, creating default plan")
+                        # Create a minimal default plan based on the prompt
+                        default_plan = {
+                            "title": f"Research Plan for: {prompt[:50]}{'...' if len(prompt) > 50 else ''}",
+                            "description": f"A plan to research the following topic: {prompt}",
+                            "objective": prompt,
+                            "steps": [
+                                {
+                                    "id": "step-1",
+                                    "title": "Initial Research",
+                                    "description": "Conduct initial research on the topic to gather information.",
+                                    "goal": "To gather preliminary information on the topic",
+                                    "expected_output": "Key findings from initial research",
+                                    "dependencies": []
+                                },
+                                {
+                                    "id": "step-2",
+                                    "title": "Analyze Findings",
+                                    "description": "Analyze the information gathered in the initial research.",
+                                    "goal": "To derive insights from the information gathered",
+                                    "expected_output": "Analysis of findings with key insights",
+                                    "dependencies": ["step-1"]
+                                },
+                                {
+                                    "id": "step-3",
+                                    "title": "Prepare Final Report",
+                                    "description": "Prepare a final report with the findings and analysis.",
+                                    "goal": "To compile findings and insights into a comprehensive report",
+                                    "expected_output": "Final report with conclusions and recommendations",
+                                    "dependencies": ["step-2"]
+                                }
+                            ]
+                        }
+                        return ResearchPlan.from_json(json.dumps(default_plan))
                     
                     # Try to parse as JSON and create ResearchPlan
                     return ResearchPlan.from_json(json_content)

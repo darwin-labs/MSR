@@ -137,17 +137,19 @@ class OpenRouterService(LLMService):
         temperature: float = 0.7,
         model: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        response_format: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Generate a response in a chat context using OpenRouter.
+        Generate a chat response from the OpenRouter API.
         
         Args:
-            messages: List of chat messages with 'role' and 'content'
-            max_tokens: Maximum number of tokens to generate
-            temperature: Sampling temperature
+            messages: List of chat messages (role/content pairs)
+            max_tokens: Maximum tokens to generate (default: 1024)
+            temperature: Temperature for generation (default: 0.7)
             model: Model to use (default: self.default_model)
             tools: List of tool definitions for function calling
+            response_format: Format specification for the response (e.g., {"type": "json_object"})
             **kwargs: Additional generation parameters
             
         Returns:
@@ -170,6 +172,10 @@ class OpenRouterService(LLMService):
         # Add tools if provided
         if tools:
             payload["tools"] = tools
+            
+        # Add response_format if provided
+        if response_format:
+            payload["response_format"] = response_format
         
         # Add additional parameters
         for key, value in kwargs.items():
