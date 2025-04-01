@@ -105,7 +105,7 @@ class PlannerLLM:
             self._service = service
         # Otherwise, create a default service
         else:
-            default_model = config_manager.get("PLANNER_MODEL", "deepseek/deepseek-v3-base:free")
+            default_model = config_manager.get("PLANNER_MODEL", "google/gemini-2.0-flash-001")
             self._service = create_openrouter_service(model=default_model)
             
         # Store generation parameters
@@ -237,12 +237,15 @@ Research Prompt: {prompt}"""
         params.update(kwargs)
         
         # Set format to JSON to help models return well-structured JSON
-        params["response_format"] = {"type": "json_object"}
+        # Some providers (e.g., Groq) don't support response_format
+        model_provider = model or self.model_name
+        if not model_provider or not any(provider in model_provider.lower() for provider in ["groq"]):
+            params["response_format"] = {"type": "json_object"}
         
         # Create chat messages
         messages = [
-            {"role": "system", "content": planning_prompt},
-            {"role": "user", "content": "Generate a detailed research plan in JSON format."}
+            {"role": "system", "content": planning_prompt + "\n\nIMPORTANT: Your response MUST be a valid JSON object."},
+            {"role": "user", "content": "Generate a detailed research plan in JSON format. Return ONLY the JSON with no other text."}
         ]
         
         try:
